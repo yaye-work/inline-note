@@ -54,9 +54,11 @@ Use together with my [Never Leave the Graph View plugin](https://community.obsid
 
 Thank you for using Never Leave the Graph View! If you run into a bug or have an idea, please open an issue. Feature requests and bug reports are very welcome.
 
-And if you find inline notes useful, you can [buy me a coffee ☕](https://buymeacoffee.com/yaye.work). It's genuinely appreciated.
+And if you find inline notes useful, you can:
 
-<a href="https://www.buymeacoffee.com/yaye.work" target="_blank"><img src="https://cdn.buymeacoffee.com/buttons/v2/default-yellow.png" alt="Buy Me a Coffee" style="height: 60px !important;width: 217px !important;" ></a>
+[<img width=auto height="70" alt="buymea bubbletea" src="https://github.com/user-attachments/assets/0f9d8765-d124-4e63-8668-bf06100b7c0a" />](https://buymeacoffee.com/yaye.work)
+
+It's genuinely appreciated.
 
 Happy noting! 
 Yaye
