@@ -37,15 +37,7 @@ it from where you are.
 1. **Vertical accent line**: indented under a thin accent bar (default).
 2. **Card**: a subtle rounded background per level.
 3. **Card + vertical accent line**… both.
-
-## Installation (manual)
-
-1. Download `main.js`, `manifest.json`, and `styles.css` from the latest
-   release.
-2. Copy them into `<your vault>/.obsidian/plugins/inline-note/`.
-3. Reload Obsidian and enable **Inline Note** under
-   Settings → Community plugins.
-
+  
 ## Tips
 
 Use together with my [Never Leave the Graph View plugin](https://community.obsidian.md/plugins/graph-node-preview): make inline notes directly in the graph preview pane, watch your connection grow without (truely) leaving the graph view. NICE.
@@ -60,8 +52,19 @@ And if you find inline notes useful, you can:
 
 It's genuinely appreciated.
 
-Happy noting! 
+Happy noting!
+
 Yaye
+
+## Installation (manual)
+
+1. Download `main.js`, `manifest.json`, and `styles.css` from the latest
+   release.
+2. Copy them into `<your vault>/.obsidian/plugins/inline-note/`.
+3. Reload Obsidian and enable **Inline Note** under
+   Settings → Community plugins.
+
+
 
 ## License
 
