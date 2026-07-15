@@ -1,0 +1,126 @@
+/* Inline Note */
+
+/* --- button next to wikilinks (main editor and nested editors) --- */
+.inline-note-btn {
+	display: inline-flex;
+	align-items: center;
+	vertical-align: text-bottom;
+	margin-left: 4px;
+	padding: 1px;
+	border-radius: var(--radius-s);
+	cursor: pointer;
+	opacity: 0;
+	color: var(--text-faint);
+	transition: opacity 120ms ease, color 120ms ease;
+}
+.inline-note-btn svg {
+	width: 14px;
+	height: 14px;
+}
+.cm-line:hover .inline-note-btn,
+.inline-note-btn:hover {
+	opacity: 1;
+}
+.inline-note-btn:hover {
+	color: var(--text-accent);
+	background-color: var(--background-modifier-hover);
+}
+
+/* --- inline card --- */
+.inline-note-embed {
+	margin: 6px 0 10px 0;
+	border: 1px solid var(--background-modifier-border);
+	border-left: 3px solid var(--interactive-accent);
+	border-radius: var(--radius-m);
+	background-color: var(--background-primary-alt);
+	overflow: hidden;
+}
+
+.inline-note-header {
+	display: flex;
+	align-items: center;
+	gap: 6px;
+	padding: 6px 10px;
+	background-color: var(--background-secondary);
+	border-bottom: 1px solid var(--background-modifier-border);
+	user-select: none;
+}
+
+.inline-note-chevron,
+.inline-note-action {
+	display: inline-flex;
+	align-items: center;
+	cursor: pointer;
+	color: var(--text-muted);
+	border-radius: var(--radius-s);
+	padding: 2px;
+}
+.inline-note-chevron:hover,
+.inline-note-action:hover {
+	color: var(--text-normal);
+	background-color: var(--background-modifier-hover);
+}
+.inline-note-chevron svg,
+.inline-note-action svg {
+	width: 15px;
+	height: 15px;
+}
+
+.inline-note-title {
+	flex: 1;
+	font-weight: 600;
+	font-size: var(--font-ui-small);
+	color: var(--text-normal);
+	cursor: pointer;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+.inline-note-embed.is-collapsed .inline-note-body {
+	display: none;
+}
+.inline-note-embed.is-collapsed .inline-note-header {
+	border-bottom: none;
+}
+
+.inline-note-body {
+	padding: 8px 10px;
+}
+
+.inline-note-error {
+	color: var(--text-error);
+	font-size: var(--font-ui-small);
+}
+
+/* --- nested CodeMirror editor inside a card --- */
+.inline-note-editor {
+	background: transparent;
+	outline: none;
+}
+.inline-note-editor .cm-content {
+	padding: 0;
+	font-family: var(--font-text);
+	font-size: var(--font-text-size);
+	line-height: var(--line-height-normal);
+	color: var(--text-normal);
+	caret-color: var(--caret-color, var(--text-normal));
+	min-height: 3em;
+}
+.inline-note-editor .cm-line {
+	padding: 0;
+}
+.inline-note-editor.cm-focused {
+	outline: none;
+}
+.inline-note-editor .cm-cursor {
+	border-left-color: var(--text-normal);
+}
+.inline-note-editor .cm-selectionBackground {
+	background-color: var(--text-selection) !important;
+}
+
+/* nested cards sit inside the nested editor's content */
+.inline-note-editor .inline-note-embed {
+	margin: 6px 0;
+}

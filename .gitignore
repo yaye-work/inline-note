@@ -1,0 +1,5 @@
+# Obsidian per-vault plugin settings (user state, not source)
+data.json
+
+# OS / editor cruft
+.DS_Store

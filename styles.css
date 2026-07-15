@@ -1,0 +1,121 @@
+/* Inline Note — flow layout: the [[link]] is the collapsible title */
+
+/* --- toggle button after wikilinks --- */
+.inline-note-btn {
+	display: inline-flex;
+	align-items: center;
+	vertical-align: text-bottom;
+	margin-left: 3px;
+	padding: 1px;
+	border-radius: var(--radius-s);
+	cursor: pointer;
+	opacity: 0;
+	color: var(--text-faint);
+	transition: opacity 120ms ease, color 120ms ease;
+}
+.inline-note-btn svg {
+	width: 14px;
+	height: 14px;
+}
+/* note doesn't exist yet: reveal on line hover */
+.cm-line:hover .inline-note-btn,
+.inline-note-btn:hover {
+	opacity: 1;
+}
+/* note exists: chevron is always visible */
+.inline-note-btn.is-visible {
+	opacity: 1;
+	color: var(--text-accent);
+}
+.inline-note-btn:hover {
+	color: var(--text-accent);
+	background-color: var(--background-modifier-hover);
+}
+
+/* --- [[links]] inside nested editors --- */
+.inline-note-link {
+	color: var(--link-color, var(--text-accent));
+	text-decoration-line: underline;
+	text-decoration-color: var(--link-decoration-color, currentColor);
+	cursor: text;
+	transition: opacity 120ms ease;
+}
+/* brackets hidden = not editing: behaves like a native link */
+.inline-note-link-clickable {
+	cursor: var(--cursor-link, pointer);
+}
+.inline-note-link-clickable:hover {
+	opacity: 0.7;
+}
+
+/* --- inline body --- */
+.inline-note-flow {
+	margin: 2px 0 6px 0;
+	margin-left: 2px;
+}
+
+/* style 1: vertical accent line only */
+.inline-note-style-line .inline-note-flow,
+.inline-note-style-card-line .inline-note-flow {
+	padding-left: 14px;
+	border-left: 2px solid var(--interactive-accent);
+}
+
+/* style 2 & 3: card background */
+.inline-note-style-card .inline-note-flow,
+.inline-note-style-card-line .inline-note-flow {
+	background-color: var(--background-primary-alt);
+	border-radius: 2px;
+	padding: 6px 10px;
+}
+.inline-note-style-card-line .inline-note-flow {
+	padding-left: 14px;
+	border-top-left-radius: 0;
+	border-bottom-left-radius: 0;
+}
+
+/* cards nested in cards: alternate tone so levels stay readable */
+.inline-note-style-card .inline-note-flow .inline-note-flow,
+.inline-note-style-card-line .inline-note-flow .inline-note-flow {
+	background-color: var(--background-secondary);
+}
+.inline-note-style-card .inline-note-flow .inline-note-flow .inline-note-flow,
+.inline-note-style-card-line .inline-note-flow .inline-note-flow .inline-note-flow {
+	background-color: var(--background-primary-alt);
+}
+
+.inline-note-error {
+	color: var(--text-error);
+	font-size: var(--font-ui-small);
+}
+
+/* --- nested CodeMirror editor --- */
+.inline-note-editor {
+	background: transparent;
+	outline: none;
+}
+.inline-note-editor .cm-content {
+	padding: 2px 0;
+	font-family: var(--font-text);
+	font-size: var(--font-text-size);
+	line-height: var(--line-height-normal);
+	color: var(--text-normal);
+	min-height: 1.5em;
+}
+.inline-note-editor .cm-line {
+	padding: 0;
+}
+.inline-note-editor.cm-focused {
+	outline: none;
+}
+.inline-note-editor .cm-cursor {
+	border-left-color: var(--text-normal);
+}
+.inline-note-editor .cm-selectionBackground {
+	background-color: var(--text-selection) !important;
+}
+
+/* nested levels */
+.inline-note-editor .inline-note-flow {
+	margin: 2px 0 4px 0;
+}
