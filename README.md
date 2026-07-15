@@ -32,11 +32,11 @@ it from where you are.
 
 ## Settings
 
-**Nesting style** — how inline bodies are drawn:
+**Nesting style** — control how inline bodies are drawn:
 
-1. **Vertical accent line** — indented under a thin accent bar (default).
-2. **Card** — a subtle rounded background per level.
-3. **Card + vertical accent line** — both.
+1. **Vertical accent line**: indented under a thin accent bar (default).
+2. **Card**: a subtle rounded background per level.
+3. **Card + vertical accent line**… both.
 
 ## Installation (manual)
 
@@ -45,6 +45,21 @@ it from where you are.
 2. Copy them into `<your vault>/.obsidian/plugins/inline-note/`.
 3. Reload Obsidian and enable **Inline Note** under
    Settings → Community plugins.
+
+## Tips
+
+Use together with my [Never Leave the Graph View plugin](https://community.obsidian.md/plugins/graph-node-preview): make inline notes directly in the graph preview pane, watch your connection grow without (truely) leaving the graph view. NICE.
+
+## Feedback & Support
+
+Thank you for using Never Leave the Graph View! If you run into a bug or have an idea, please open an issue. Feature requests and bug reports are very welcome.
+
+And if you find inline notes useful, you can [buy me a coffee ☕](https://buymeacoffee.com/yaye.work). It's genuinely appreciated.
+
+<a href="https://www.buymeacoffee.com/yaye.work"><img src="https://img.buymeacoffee.com/button-api/?text=Buy me an ice-cream&emoji=🍦&slug=yaye.work&button_colour=fe92a8&font_colour=000000&font_family=Bree&outline_colour=000000&coffee_colour=FFDD00" /></a>
+
+Happy noting! 
+Yaye
 
 ## License
 
