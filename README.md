@@ -56,7 +56,7 @@ Thank you for using Never Leave the Graph View! If you run into a bug or have an
 
 And if you find inline notes useful, you can [buy me a coffee ☕](https://buymeacoffee.com/yaye.work). It's genuinely appreciated.
 
-<a href="https://www.buymeacoffee.com/yaye.work"><img src="https://img.buymeacoffee.com/button-api/?text=Buy me an ice-cream&emoji=🍦&slug=yaye.work&button_colour=fe92a8&font_colour=000000&font_family=Bree&outline_colour=000000&coffee_colour=FFDD00" /></a>
+<a href="https://www.buymeacoffee.com/yaye.work" target="_blank"><img src="https://cdn.buymeacoffee.com/buttons/v2/default-yellow.png" alt="Buy Me a Coffee" style="height: 60px !important;width: 217px !important;" ></a>
 
 Happy noting! 
 Yaye
