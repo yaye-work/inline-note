@@ -116,8 +116,9 @@
 .inline-note-editor .cm-cursor {
 	border-left-color: var(--text-normal);
 }
-.inline-note-editor .cm-selectionBackground {
-	background-color: var(--text-selection) !important;
+.inline-note-editor .cm-scroller .cm-selectionLayer .cm-selectionBackground,
+.inline-note-editor.cm-focused .cm-scroller .cm-selectionLayer .cm-selectionBackground {
+	background-color: var(--text-selection);
 }
 
 /* nested cards sit inside the nested editor's content */
