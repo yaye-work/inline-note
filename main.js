@@ -968,9 +968,7 @@ class InlineNotePlugin extends Plugin {
 			name: "Collapse all inline notes",
 			editorCallback: (editor, ctx) => {
 				const sourcePath = (ctx && ctx.file && ctx.file.path) || "";
-				if (editor.cm && !this.collapseAllInline(editor.cm, sourcePath)) {
-					new Notice("No open inline notes.");
-				}
+				if (editor.cm) this.collapseAllInline(editor.cm, sourcePath);
 			},
 		});
 	}
@@ -1141,7 +1139,6 @@ class InlineNotePlugin extends Plugin {
 		} else {
 			await this.app.vault.trash(file, true);
 		}
-		new Notice("Inline Note: removed empty note “" + linkText + "”.");
 		return true;
 	}
 }
