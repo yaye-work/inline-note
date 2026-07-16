@@ -1,7 +1,7 @@
 {
 	"id": "inline-note",
 	"name": "Inline Note",
-	"version": "0.1.1",
+	"version": "0.2.0",
 	"minAppVersion": "1.4.0",
 	"description": "Create and edit a linked note inline, right inside the parent note. Click the button next to any [[wikilink]] to expand a collapsible editor for that note without leaving your context.",
 	"author": "yaye",
