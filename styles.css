@@ -88,6 +88,31 @@
 	font-size: var(--font-ui-small);
 }
 
+/* --- truncated preview of long notes (click or Tab to expand) --- */
+.inline-note-preview {
+	color: var(--text-muted);
+	font-family: var(--font-text);
+	font-size: var(--font-text-size);
+	line-height: var(--line-height-normal);
+	white-space: pre-wrap;
+	cursor: pointer;
+	padding: 2px 0;
+	transition: color 120ms ease;
+}
+.inline-note-preview:hover {
+	color: var(--text-normal);
+}
+
+/* --- rendered ![[embeds]] inside nested editors --- */
+.inline-note-embedded {
+	display: inline-block;
+	width: 100%;
+	vertical-align: top;
+}
+.inline-note-embedded .internal-embed {
+	display: block;
+}
+
 /* --- nested CodeMirror editor --- */
 .inline-note-editor {
 	background: transparent;

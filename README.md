@@ -64,8 +64,6 @@ Yaye
 3. Reload Obsidian and enable **Inline Note** under
    Settings → Community plugins.
 
-
-
 ## License
 
 [MIT](LICENSE) © yaye.work

@@ -8,46 +8,51 @@ const {
 	setIcon,
 	editorInfoField,
 	debounce,
+	Component,
+	MarkdownRenderer,
 } = require("obsidian");
 const { Decoration, WidgetType, EditorView, keymap } = require("@codemirror/view");
 const { StateEffect, StateField, Prec } = require("@codemirror/state");
 const { history, defaultKeymap, historyKeymap } = require("@codemirror/commands");
 
 const MAX_DEPTH = 5;
+const PREVIEW_LIMIT = 200;
 
 const DEFAULT_SETTINGS = {
 	nestStyle: "line", // "line" | "card" | "card-line"
 };
 
 /* ------------------------------------------------------------------ */
-/* State. Expansion defaults depend on depth (top level: expanded,     */
-/* nested: collapsed), so the field stores which links the user has    */
-/* TOGGLED away from their default, not which are open.                */
+/* State. Each link is "closed", "preview" (truncated if the note is   */
+/* long, a full editor otherwise), or "full". Defaults: top level      */
+/* opens in preview, nested links start closed.                        */
 /* ------------------------------------------------------------------ */
 
-const toggleInline = StateEffect.define();
-// no-op effect used purely to force a decoration rebuild (e.g. after
-// a note file was just created outside of a doc change)
-const refreshInline = StateEffect.define();
+const setInlineState = StateEffect.define();
 
-const toggledField = StateField.define({
+const inlineStateField = StateField.define({
 	create() {
-		return new Set();
+		return new Map();
 	},
 	update(value, tr) {
 		let next = value;
 		for (const e of tr.effects) {
-			if (e.is(toggleInline)) {
-				if (next === value) next = new Set(value);
-				if (next.has(e.value)) next.delete(e.value);
-				else next.add(e.value);
+			if (e.is(setInlineState)) {
+				if (next === value) next = new Map(value);
+				next.set(e.value.link, e.value.state);
 			}
 		}
 		return next;
 	},
 });
 
+function getInlineState(state, linkText, depth) {
+	const explicit = state.field(inlineStateField).get(linkText);
+	return explicit || (depth === 0 ? "preview" : "closed");
+}
+
 const LINK_RE = /\[\[([^\[\]|#\n]+)(?:[#|][^\]\n]*)?\]\]/g;
+const EMBED_RE = /!\[\[([^\[\]\n]+)\]\]/g;
 
 /* nested editors reveal [[brackets]] only while focused with the
  * cursor inside the link — so we track focus as editor state */
@@ -65,17 +70,13 @@ const focusedField = StateField.define({
 	},
 });
 
-function isOpen(state, linkText, depth) {
-	const defaultOpen = depth === 0;
-	const toggled = state.field(toggledField).has(linkText);
-	return defaultOpen !== toggled;
-}
-
 function linkAt(state, pos, requireAtEnd) {
 	const line = state.doc.lineAt(pos);
 	LINK_RE.lastIndex = 0;
 	let m;
 	while ((m = LINK_RE.exec(line.text)) !== null) {
+		// ![[...]] is an embed, not a toggleable link
+		if (m.index > 0 && line.text[m.index - 1] === "!") continue;
 		const start = line.from + m.index;
 		const end = start + m[0].length;
 		const hit = requireAtEnd ? pos === end : pos >= start && pos <= end;
@@ -146,30 +147,81 @@ class LinkToggleWidget extends WidgetType {
 }
 
 /* ------------------------------------------------------------------ */
+/* Embed widget: renders ![[...]] inside nested editors through        */
+/* Obsidian's MarkdownRenderer (PDFs, images, note embeds).            */
+/* ------------------------------------------------------------------ */
+
+class EmbedWidget extends WidgetType {
+	constructor(plugin, target, sourcePath) {
+		super();
+		this.plugin = plugin;
+		this.target = target;
+		this.sourcePath = sourcePath;
+	}
+
+	eq(other) {
+		return other.target === this.target && other.sourcePath === this.sourcePath;
+	}
+
+	toDOM() {
+		const el = document.createElement("span");
+		el.className = "inline-note-embedded";
+		this._component = new Component();
+		this._component.load();
+		MarkdownRenderer.render(
+			this.plugin.app,
+			"![[" + this.target + "]]",
+			el,
+			this.sourcePath,
+			this._component
+		).catch(() => {
+			el.textContent = "![[" + this.target + "]]";
+		});
+		el.addEventListener("mousedown", (e) => e.stopPropagation());
+		return el;
+	}
+
+	destroy() {
+		if (this._component) this._component.unload();
+	}
+
+	ignoreEvent() {
+		return true;
+	}
+}
+
+/* ------------------------------------------------------------------ */
 /* Inline body: no card chrome — the link is the title.                */
 /* ------------------------------------------------------------------ */
 
 class InlineNoteWidget extends WidgetType {
-	constructor(plugin, linkText, sourcePath, depth, ancestors) {
+	constructor(plugin, linkText, sourcePath, depth, ancestors, mode) {
 		super();
 		this.plugin = plugin;
 		this.linkText = linkText;
 		this.sourcePath = sourcePath;
 		this.depth = depth;
 		this.ancestors = ancestors;
+		this.mode = mode; // "preview" | "full"
 	}
 
 	eq(other) {
-		return other.linkText === this.linkText && other.sourcePath === this.sourcePath;
+		return (
+			other.linkText === this.linkText &&
+			other.sourcePath === this.sourcePath &&
+			other.mode === this.mode
+		);
 	}
 
-	toDOM() {
+	toDOM(view) {
 		const panel = buildInlineBody(
 			this.plugin,
 			this.linkText,
 			this.sourcePath,
 			this.depth,
-			this.ancestors
+			this.ancestors,
+			this.mode,
+			view
 		);
 		this._destroyPanel = panel.destroy;
 		panel.el.addEventListener("mousedown", (e) => e.stopPropagation());
@@ -185,7 +237,7 @@ class InlineNoteWidget extends WidgetType {
 	}
 }
 
-function buildInlineBody(plugin, linkText, sourcePath, depth, ancestors) {
+function buildInlineBody(plugin, linkText, sourcePath, depth, ancestors, mode, parentView) {
 	const app = plugin.app;
 
 	const wrap = document.createElement("div");
@@ -203,65 +255,90 @@ function buildInlineBody(plugin, linkText, sourcePath, depth, ancestors) {
 	};
 	const debouncedSave = debounce(saveSelf, 500, true);
 
+	const mountEditor = (content, childSourcePath, childAncestors) => {
+		editor = new EditorView({
+			doc: content,
+			parent: wrap,
+			extensions: [
+				history(),
+				keymap.of([...historyKeymap, ...defaultKeymap]),
+				EditorView.lineWrapping,
+				focusedField,
+				EditorView.updateListener.of((u) => {
+					if (u.docChanged) {
+						dirty = true;
+						debouncedSave();
+					}
+					if (u.focusChanged) {
+						const focused = u.view.hasFocus;
+						queueMicrotask(() =>
+							u.view.dispatch({ effects: setFocused.of(focused) })
+						);
+					}
+				}),
+				// links with hidden brackets act like native links:
+				// click opens the note, Cmd/Ctrl+click opens a new tab
+				EditorView.domEventHandlers({
+					mousedown: (e, view) => {
+						const el =
+							e.target instanceof Element &&
+							e.target.closest(".inline-note-link-clickable");
+						if (!el) return false;
+						const pos = view.posAtCoords({ x: e.clientX, y: e.clientY });
+						if (pos == null) return false;
+						const target = linkAt(view.state, pos, false);
+						if (!target) return false;
+						e.preventDefault();
+						app.workspace.openLinkText(
+							target,
+							childSourcePath,
+							e.metaKey || e.ctrlKey
+						);
+						return true;
+					},
+				}),
+				buildInlineExtensions(
+					plugin,
+					() => childSourcePath,
+					depth,
+					() => childAncestors
+				),
+				EditorView.contentAttributes.of({ "aria-label": linkText }),
+			],
+		});
+		editor.dom.classList.add("inline-note-editor");
+		editor.contentDOM.addEventListener("blur", () => saveSelf());
+		if (plugin.consumePendingFocus(linkText)) editor.focus();
+	};
+
+	const mountPreview = (content) => {
+		const preview = wrap.appendChild(document.createElement("div"));
+		preview.className = "inline-note-preview";
+		preview.textContent = content.slice(0, PREVIEW_LIMIT).trimEnd() + "…";
+		preview.setAttribute("aria-label", "Expand (Tab after ]])");
+		preview.addEventListener("click", (e) => {
+			e.preventDefault();
+			e.stopPropagation();
+			plugin._pendingFocus = linkText;
+			parentView.dispatch({
+				effects: setInlineState.of({ link: linkText, state: "full" }),
+			});
+		});
+	};
+
+	// The file may have been created a moment ago and the metadata cache
+	// might not have caught up yet — retry resolution briefly.
 	const loadContent = (attempt) => {
 		const file = plugin.resolveLink(linkText, sourcePath);
 		if (file) {
 			const childSourcePath = file.path;
 			const childAncestors = ancestors.concat([file.path]);
 			app.vault.read(file).then((content) => {
-				editor = new EditorView({
-					doc: content,
-					parent: wrap,
-					extensions: [
-						history(),
-						keymap.of([...historyKeymap, ...defaultKeymap]),
-						EditorView.lineWrapping,
-						focusedField,
-						EditorView.updateListener.of((u) => {
-							if (u.docChanged) {
-								dirty = true;
-								debouncedSave();
-							}
-							if (u.focusChanged) {
-								const focused = u.view.hasFocus;
-								queueMicrotask(() =>
-									u.view.dispatch({ effects: setFocused.of(focused) })
-								);
-							}
-						}),
-						// links with hidden brackets act like native links:
-						// click opens the note, Cmd/Ctrl+click opens a new tab
-						EditorView.domEventHandlers({
-							mousedown: (e, view) => {
-								const el =
-									e.target instanceof Element &&
-									e.target.closest(".inline-note-link-clickable");
-								if (!el) return false;
-								const pos = view.posAtCoords({ x: e.clientX, y: e.clientY });
-								if (pos == null) return false;
-								const target = linkAt(view.state, pos, false);
-								if (!target) return false;
-								e.preventDefault();
-								app.workspace.openLinkText(
-									target,
-									childSourcePath,
-									e.metaKey || e.ctrlKey
-								);
-								return true;
-							},
-						}),
-						buildInlineExtensions(
-							plugin,
-							() => childSourcePath,
-							depth,
-							() => childAncestors
-						),
-						EditorView.contentAttributes.of({ "aria-label": linkText }),
-					],
-				});
-				editor.dom.classList.add("inline-note-editor");
-				editor.contentDOM.addEventListener("blur", () => saveSelf());
-				if (plugin.consumePendingFocus(linkText)) editor.focus();
+				if (mode === "preview" && content.length > PREVIEW_LIMIT) {
+					mountPreview(content);
+				} else {
+					mountEditor(content, childSourcePath, childAncestors);
+				}
 			});
 		} else if (attempt < 10) {
 			window.setTimeout(() => loadContent(attempt + 1), 100);
@@ -307,9 +384,32 @@ function buildDecorationField(plugin, getSourcePath, depth, getAncestors) {
 		const rendered = new Set();
 
 		const text = state.doc.toString();
+
+		// ![[embeds]] inside nested editors render through Obsidian's
+		// MarkdownRenderer; raw text is shown while the cursor touches them
+		if (depth > 0) {
+			EMBED_RE.lastIndex = 0;
+			let em;
+			while ((em = EMBED_RE.exec(text)) !== null) {
+				const target = em[1].trim();
+				if (!target) continue;
+				const start = em.index;
+				const end = start + em[0].length;
+				if (!selectionTouches(state, start, end)) {
+					decos.push(
+						Decoration.replace({
+							widget: new EmbedWidget(plugin, target, sourcePath),
+						}).range(start, end)
+					);
+				}
+			}
+		}
+
 		LINK_RE.lastIndex = 0;
 		let m;
 		while ((m = LINK_RE.exec(text)) !== null) {
+			// skip the [[...]] inside ![[...]] embeds
+			if (m.index > 0 && text[m.index - 1] === "!") continue;
 			const linkText = m[1].trim();
 			if (!linkText) continue;
 			const start = m.index;
@@ -335,7 +435,9 @@ function buildDecorationField(plugin, getSourcePath, depth, getAncestors) {
 			// no inline body for links that would recurse into an ancestor
 			// (self-links, A→B→A loops) or past the depth cap
 			const canInline = exists && depth < MAX_DEPTH && !ancestors.includes(file.path);
-			const open = canInline && isOpen(state, linkText, depth) && !rendered.has(linkText);
+			const inlineState = getInlineState(state, linkText, depth);
+			const open =
+				canInline && inlineState !== "closed" && !rendered.has(linkText);
 
 			decos.push(
 				Decoration.widget({
@@ -349,7 +451,14 @@ function buildDecorationField(plugin, getSourcePath, depth, getAncestors) {
 				const line = state.doc.lineAt(end);
 				decos.push(
 					Decoration.widget({
-						widget: new InlineNoteWidget(plugin, linkText, sourcePath, depth + 1, ancestors),
+						widget: new InlineNoteWidget(
+							plugin,
+							linkText,
+							sourcePath,
+							depth + 1,
+							ancestors,
+							inlineState
+						),
 						side: 2,
 						block: true,
 					}).range(line.to)
@@ -366,11 +475,10 @@ function buildDecorationField(plugin, getSourcePath, depth, getAncestors) {
 		update(value, tr) {
 			if (
 				tr.docChanged ||
-				// nested editors reveal/hide brackets as the cursor moves
-				// or the editor gains/loses focus
+				// nested editors reveal/hide brackets and embeds as the
+				// cursor moves or the editor gains/loses focus
 				(depth > 0 && tr.selection) ||
-				tr.effects.some((e) => e.is(setFocused)) ||
-				tr.effects.some((e) => e.is(toggleInline) || e.is(refreshInline))
+				tr.effects.some((e) => e.is(setFocused) || e.is(setInlineState))
 			) {
 				return buildDecos(tr.state);
 			}
@@ -385,8 +493,9 @@ function buildToggleKeymap(plugin, getSourcePath, depth) {
 		keymap.of([
 			{
 				// Tab immediately after "]]": cycle the inline note —
-				// create+expand if missing, expand if collapsed, collapse
-				// if open. Never fires elsewhere, so indentation is safe.
+				// create+open if missing, preview → full for long notes,
+				// then collapse. Never fires elsewhere, so indentation is
+				// safe.
 				key: "Tab",
 				run: (view) => {
 					const linkText = linkAt(view.state, view.state.selection.main.head, true);
@@ -401,7 +510,7 @@ function buildToggleKeymap(plugin, getSourcePath, depth) {
 
 function buildInlineExtensions(plugin, getSourcePath, depth, getAncestors) {
 	return [
-		toggledField,
+		inlineStateField,
 		buildDecorationField(plugin, getSourcePath, depth, getAncestors),
 		buildToggleKeymap(plugin, getSourcePath, depth),
 	];
@@ -472,6 +581,7 @@ class InlineNotePlugin extends Plugin {
 				let m;
 				let target = null;
 				while ((m = LINK_RE.exec(lineText)) !== null) {
+					if (m.index > 0 && lineText[m.index - 1] === "!") continue;
 					if (cursor.ch >= m.index && cursor.ch <= m.index + m[0].length) {
 						target = m[1].trim();
 						break;
@@ -516,35 +626,45 @@ class InlineNotePlugin extends Plugin {
 		return false;
 	}
 
-	/** Create the note if needed, then toggle its inline body in `view`. */
-	toggleInlineNote(view, linkText, sourcePath, depth) {
+	/** Cycle the inline note: create+open if missing; closed → preview;
+	 * preview → full (long notes) or closed (short, already fully shown);
+	 * full → closed. */
+	async toggleInlineNote(view, linkText, sourcePath, depth) {
 		if (depth >= MAX_DEPTH) {
 			new Notice("Inline Note: max nesting depth reached — opening in a tab.");
 			this.app.workspace.openLinkText(linkText, sourcePath, false);
 			return;
 		}
-		const existedBefore = !!this.resolveLink(linkText, sourcePath);
-		this.ensureFile(linkText, sourcePath)
-			.then(() => {
-				const openNow = isOpen(view.state, linkText, depth);
-				const wantOpen = existedBefore ? !openNow : true;
-				if (wantOpen) this._pendingFocus = linkText;
-				view.dispatch({
-					effects:
-						wantOpen === openNow
-							? refreshInline.of(linkText)
-							: toggleInline.of(linkText),
-				});
-				// Collapsing destroys the nested editor; if it held keyboard
-				// focus, focus would silently fall to <body>, which other
-				// plugins (e.g. graph preview panes watching focusin/focusout)
-				// read as "the user left the pane". Hand focus to the editor
-				// that owns the link instead.
-				if (!wantOpen) view.focus();
-			})
-			.catch((err) => {
-				new Notice("Inline Note: could not create note — " + err.message);
-			});
+		try {
+			const existedBefore = !!this.resolveLink(linkText, sourcePath);
+			const file = await this.ensureFile(linkText, sourcePath);
+			let content = "";
+			try {
+				content = await this.app.vault.cachedRead(file);
+			} catch (e) {
+				/* new file, no cache yet */
+			}
+			const long = content.length > PREVIEW_LIMIT;
+			const current = getInlineState(view.state, linkText, depth);
+
+			let next;
+			if (!existedBefore) next = "preview"; // brand-new note: empty, opens as editor
+			else if (current === "closed") next = "preview";
+			else if (current === "preview") next = long ? "full" : "closed";
+			else next = "closed";
+
+			const rendersEditor = next === "full" || (next === "preview" && !long);
+			if (rendersEditor) this._pendingFocus = linkText;
+			view.dispatch({ effects: setInlineState.of({ link: linkText, state: next }) });
+			// Collapsing destroys the nested editor; if it held keyboard
+			// focus, focus would silently fall to <body>, which other
+			// plugins (e.g. graph preview panes watching focusin/focusout)
+			// read as "the user left the pane". Hand focus to the editor
+			// that owns the link instead.
+			if (next === "closed") view.focus();
+		} catch (err) {
+			new Notice("Inline Note: could not create note — " + err.message);
+		}
 	}
 
 	/** Resolve a link target, falling back to a direct path lookup while
