@@ -26,14 +26,12 @@ const MAX_DEPTH = 5;
 const PREVIEW_LIMIT = 200;
 
 const DEFAULT_SETTINGS = {
-	nestStyle: "line", // "line" | "card" | "card-line"
+	nestStyle: "card", // "line" | "card" | "card-line"
 };
 
 /* ------------------------------------------------------------------ */
-/* State. Each link is "closed" or "preview" (open). Links in a real   */
-/* note view open by default; links inside inline bodies start closed  */
-/* (otherwise chains of notes would cascade open). Long notes get a    */
-/* fixed-height scrollable body instead of a truncated preview.        */
+/* State. Each link is "closed" (default) or "preview" (open). Long    */
+/* notes get a fixed-height scrollable body.                           */
 /* ------------------------------------------------------------------ */
 
 const setInlineState = StateEffect.define();
@@ -54,16 +52,8 @@ const inlineStateField = StateField.define({
 	},
 });
 
-function isMainEditor(state) {
-	// a real note view has a workspace leaf; embedded editors
-	// (inline bodies, canvas nodes) don't
-	const info = state.field(editorInfoField, false);
-	return !!(info && info.leaf);
-}
-
 function getInlineState(state, linkText) {
-	const explicit = state.field(inlineStateField).get(linkText);
-	return explicit || (isMainEditor(state) ? "preview" : "closed");
+	return state.field(inlineStateField).get(linkText) || "closed";
 }
 
 const LINK_RE = /\[\[([^\[\]|#\n]+)(?:[#|][^\]\n]*)?\]\]/g;
@@ -298,6 +288,21 @@ function buildInlineBody(plugin, linkText, sourcePath, depth, ancestors, parentV
 	const wrap = document.createElement("div");
 	wrap.className = "inline-note-flow";
 
+	// visible title (the note's name); click opens it in a tab
+	const titleEl = wrap.appendChild(document.createElement("div"));
+	titleEl.className = "inline-note-title";
+	titleEl.textContent = linkText;
+	titleEl.setAttribute("aria-label", "Open note");
+	titleEl.addEventListener("mousedown", (e) => e.stopPropagation());
+	titleEl.addEventListener("click", (e) => {
+		e.preventDefault();
+		e.stopPropagation();
+		app.workspace.openLinkText(linkText, sourcePath, e.metaKey || e.ctrlKey);
+	});
+
+	const contentEl = wrap.appendChild(document.createElement("div"));
+	contentEl.className = "inline-note-content";
+
 	let fallbackEditor = null; // CM EditorView (fallback path)
 	let nativeEmbed = null; // Obsidian MarkdownEmbed (preferred path)
 	let renderComponent = null;
@@ -361,7 +366,7 @@ function buildInlineBody(plugin, linkText, sourcePath, depth, ancestors, parentV
 			fallbackEditor.destroy();
 			fallbackEditor = null;
 		}
-		while (wrap.firstChild) wrap.removeChild(wrap.firstChild);
+		while (contentEl.firstChild) contentEl.removeChild(contentEl.firstChild);
 	};
 
 	const mdLinkFor = (file) => {
@@ -423,7 +428,7 @@ function buildInlineBody(plugin, linkText, sourcePath, depth, ancestors, parentV
 	/* rendered (reading) view — real markdown incl. embeds */
 	const mountRendered = () => {
 		clearBody();
-		const el = wrap.appendChild(document.createElement("div"));
+		const el = contentEl.appendChild(document.createElement("div"));
 		el.className = "inline-note-rendered markdown-rendered";
 		renderComponent = new Component();
 		renderComponent.load();
@@ -496,7 +501,7 @@ function buildInlineBody(plugin, linkText, sourcePath, depth, ancestors, parentV
 			const embed = factory({ app, containerEl: container, state: {} }, file, "");
 			if (!embed || typeof embed.showEditor !== "function") return false;
 			embed.editable = true;
-			wrap.appendChild(container);
+			contentEl.appendChild(container);
 			embed.load();
 			if (typeof embed.loadFile === "function") await embed.loadFile();
 			embed.showEditor();
@@ -547,7 +552,7 @@ function buildInlineBody(plugin, linkText, sourcePath, depth, ancestors, parentV
 	const mountFallback = () => {
 		fallbackEditor = new EditorView({
 			doc: currentContent,
-			parent: wrap,
+			parent: contentEl,
 			extensions: [
 				history(),
 				keymap.of([...historyKeymap, ...defaultKeymap]),
@@ -662,7 +667,7 @@ function buildInlineBody(plugin, linkText, sourcePath, depth, ancestors, parentV
 			const domAnc = domAncestorPaths(wrap);
 			const allAnc = ancestors.concat(domAnc);
 			if (allAnc.includes(file.path) || domAnc.length >= MAX_DEPTH) {
-				const msg = wrap.appendChild(document.createElement("div"));
+				const msg = contentEl.appendChild(document.createElement("div"));
 				msg.className = "inline-note-error";
 				msg.textContent = allAnc.includes(file.path)
 					? "Already open above — click to open in a tab."
@@ -689,7 +694,7 @@ function buildInlineBody(plugin, linkText, sourcePath, depth, ancestors, parentV
 		} else if (attempt < 10) {
 			window.setTimeout(() => loadContent(attempt + 1), 100);
 		} else {
-			const err = wrap.appendChild(document.createElement("div"));
+			const err = contentEl.appendChild(document.createElement("div"));
 			err.className = "inline-note-error";
 			err.textContent = "Note not found: " + linkText;
 		}
