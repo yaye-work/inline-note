@@ -19,7 +19,7 @@ let AUTOCOMPLETE = null;
 try {
 	AUTOCOMPLETE = require("@codemirror/autocomplete");
 } catch (e) {
-	/* older Obsidian without the module: no [[ suggestions, all else works */
+	/* fallback editor only: no [[ suggestions, all else works */
 }
 
 const MAX_DEPTH = 5;
@@ -31,8 +31,9 @@ const DEFAULT_SETTINGS = {
 
 /* ------------------------------------------------------------------ */
 /* State. Each link is "closed", "preview" (truncated if the note is   */
-/* long, the full body otherwise), or "full". Defaults: top level      */
-/* opens in preview, nested links start closed.                        */
+/* long, the full body otherwise), or "full". Links in a real note     */
+/* view open in preview by default; links inside inline bodies start   */
+/* closed (otherwise chains of notes would cascade open).              */
 /* ------------------------------------------------------------------ */
 
 const setInlineState = StateEffect.define();
@@ -53,9 +54,16 @@ const inlineStateField = StateField.define({
 	},
 });
 
-function getInlineState(state, linkText, depth) {
+function isMainEditor(state) {
+	// a real note view has a workspace leaf; embedded editors
+	// (inline bodies, canvas nodes) don't
+	const info = state.field(editorInfoField, false);
+	return !!(info && info.leaf);
+}
+
+function getInlineState(state, linkText) {
 	const explicit = state.field(inlineStateField).get(linkText);
-	return explicit || (depth === 0 ? "preview" : "closed");
+	return explicit || (isMainEditor(state) ? "preview" : "closed");
 }
 
 const LINK_RE = /\[\[([^\[\]|#\n]+)(?:[#|][^\]\n]*)?\]\]/g;
@@ -63,23 +71,8 @@ const EMBED_RE = /!\[\[([^\[\]\n]+)\]\]/g;
 // links like [[photo.png]] name a non-markdown file — never inline those
 const NON_MD_EXT_RE = /\.(?!md$)[a-zA-Z0-9]{1,8}$/;
 
-/* completion source for [[ inside nested editors: suggests vault files,
- * like Obsidian's native link suggester */
-function linkCompletionSource(plugin) {
-	return (ctx) => {
-		const m = ctx.matchBefore(/!?\[\[[^\[\]]*$/);
-		if (!m) return null;
-		const from = m.from + m.text.indexOf("[[") + 2;
-		const options = plugin.app.vault.getFiles().map((f) => {
-			const label = f.extension === "md" ? f.basename : f.name;
-			return { label, type: "file", apply: label + "]]" };
-		});
-		return { from, options, validFor: /^[^\[\]]*$/ };
-	};
-}
-
-/* nested editors reveal [[brackets]] only while focused with the
- * cursor inside the link — so we track focus as editor state */
+/* nested fallback editors reveal [[brackets]] only while focused with
+ * the cursor inside the link — so we track focus as editor state */
 const setFocused = StateEffect.define();
 
 const focusedField = StateField.define({
@@ -107,6 +100,30 @@ function linkAt(state, pos, requireAtEnd) {
 		if (hit && m[1].trim()) return m[1].trim();
 	}
 	return null;
+}
+
+/* completion source for [[ inside FALLBACK editors: suggests vault
+ * files. The native embedded editor uses Obsidian's own suggester. */
+function linkCompletionSource(plugin) {
+	return (ctx) => {
+		const m = ctx.matchBefore(/!?\[\[[^\[\]]*$/);
+		if (!m) return null;
+		const from = m.from + m.text.indexOf("[[") + 2;
+		const options = plugin.app.vault.getFiles().map((f) => {
+			const label = f.extension === "md" ? f.basename : f.name;
+			return { label, type: "file", apply: label + "]]" };
+		});
+		return { from, options, validFor: /^[^\[\]]*$/ };
+	};
+}
+
+/* focus moving into Obsidian popovers (link suggester, menus, CM
+ * tooltips) must not count as "left the inline body" */
+function focusMovedToPopover(e) {
+	return (
+		e.relatedTarget instanceof Element &&
+		!!e.relatedTarget.closest(".suggestion-container, .cm-tooltip, .menu, .modal-container")
+	);
 }
 
 /* ------------------------------------------------------------------ */
@@ -171,8 +188,8 @@ class LinkToggleWidget extends WidgetType {
 }
 
 /* ------------------------------------------------------------------ */
-/* Embed widget: renders ![[...]] inside nested source editors         */
-/* through Obsidian's MarkdownRenderer (PDFs, images, note embeds).    */
+/* Embed widget: renders ![[...]] inside FALLBACK editors through      */
+/* Obsidian's MarkdownRenderer (PDFs, images, note embeds).            */
 /* ------------------------------------------------------------------ */
 
 class EmbedWidget extends WidgetType {
@@ -215,10 +232,10 @@ class EmbedWidget extends WidgetType {
 }
 
 /* ------------------------------------------------------------------ */
-/* Inline body: no card chrome — the link is the title.                */
-/* Idle bodies show the note RENDERED (real markdown: headings,        */
-/* embeds, images, PDFs). Click into the body to edit the source;      */
-/* focus leaving the body renders it again.                            */
+/* Inline body. Idle: rendered reading view. Editing: Obsidian's own   */
+/* embedded markdown editor (the Canvas mechanism) — live preview,     */
+/* native commands, native suggester, native drag & drop. Falls back   */
+/* to a bare CodeMirror editor when that internal API is unavailable.  */
 /* ------------------------------------------------------------------ */
 
 class InlineNoteWidget extends WidgetType {
@@ -264,25 +281,68 @@ class InlineNoteWidget extends WidgetType {
 	}
 }
 
+/** Paths of the inline bodies this element sits inside (DOM walk —
+ * works across native embedded editors where CM state can't carry
+ * ancestry). */
+function domAncestorPaths(el) {
+	const out = [];
+	let cur = el;
+	while ((cur = cur.parentElement)) {
+		if (cur.classList.contains("inline-note-flow") && cur.dataset.notePath) {
+			out.push(cur.dataset.notePath);
+		}
+	}
+	return out;
+}
+
 function buildInlineBody(plugin, linkText, sourcePath, depth, ancestors, mode, parentView) {
 	const app = plugin.app;
 
 	const wrap = document.createElement("div");
 	wrap.className = "inline-note-flow";
 
-	let editor = null;
+	let fallbackEditor = null; // CM EditorView (fallback path)
+	let nativeEmbed = null; // Obsidian MarkdownEmbed (preferred path)
 	let renderComponent = null;
 	let dirty = false;
 	let currentContent = "";
 	let childSourcePath = sourcePath;
 	let childAncestors = ancestors;
 
+	const bodyText = () => {
+		if (nativeEmbed) {
+			try {
+				if (nativeEmbed.editMode) {
+					if (typeof nativeEmbed.editMode.get === "function") {
+						return nativeEmbed.editMode.get();
+					}
+					const cm =
+						nativeEmbed.editMode.editor && nativeEmbed.editMode.editor.cm;
+					if (cm) return cm.state.doc.toString();
+				}
+			} catch (e) {
+				/* fall through */
+			}
+			return null;
+		}
+		if (fallbackEditor) return fallbackEditor.state.doc.toString();
+		return null;
+	};
+
 	const saveSelf = async () => {
-		if (!editor || !dirty) return;
 		const file = plugin.resolveLink(linkText, sourcePath);
 		if (!file) return;
+		if (nativeEmbed) {
+			const text = bodyText();
+			if (text != null && text !== currentContent) {
+				currentContent = text;
+				await app.vault.modify(file, text);
+			}
+			return;
+		}
+		if (!fallbackEditor || !dirty) return;
 		dirty = false;
-		currentContent = editor.state.doc.toString();
+		currentContent = fallbackEditor.state.doc.toString();
 		await app.vault.modify(file, currentContent);
 	};
 	const debouncedSave = debounce(saveSelf, 500, true);
@@ -292,9 +352,17 @@ function buildInlineBody(plugin, linkText, sourcePath, depth, ancestors, mode, p
 			renderComponent.unload();
 			renderComponent = null;
 		}
-		if (editor) {
-			editor.destroy();
-			editor = null;
+		if (nativeEmbed) {
+			try {
+				nativeEmbed.unload();
+			} catch (e) {
+				/* ignore */
+			}
+			nativeEmbed = null;
+		}
+		if (fallbackEditor) {
+			fallbackEditor.destroy();
+			fallbackEditor = null;
 		}
 		while (wrap.firstChild) wrap.removeChild(wrap.firstChild);
 	};
@@ -305,9 +373,6 @@ function buildInlineBody(plugin, linkText, sourcePath, depth, ancestors, mode, p
 		return link;
 	};
 
-	/** Resolve a drop into link text: files dragged from Obsidian's file
-	 * explorer link directly; OS file drops are imported as attachments
-	 * first. Returns null for drops we don't handle. */
 	const dropIsHandleable = (e) => {
 		const dr = app.dragManager && app.dragManager.draggable;
 		if (dr && (dr.file || (dr.files && dr.files.length))) return true;
@@ -334,6 +399,30 @@ function buildInlineBody(plugin, linkText, sourcePath, depth, ancestors, mode, p
 		return links.length ? links.join("\n") : null;
 	};
 
+	/** shared exit path: reclaim an untouched empty note, otherwise
+	 * save and drop back to the rendered view */
+	const leaveBody = (text) => {
+		currentContent = text != null ? text : currentContent;
+		if (currentContent.trim() === "") {
+			plugin
+				.maybeReclaimEmpty(linkText, sourcePath, currentContent)
+				.then((reclaimed) => {
+					if (reclaimed) {
+						dirty = false;
+						parentView.dispatch({
+							effects: setInlineState.of({ link: linkText, state: "closed" }),
+						});
+					} else {
+						saveSelf();
+						mountRendered();
+					}
+				});
+			return;
+		}
+		saveSelf();
+		mountRendered();
+	};
+
 	/* rendered (reading) view — real markdown incl. embeds */
 	const mountRendered = () => {
 		clearBody();
@@ -341,13 +430,12 @@ function buildInlineBody(plugin, linkText, sourcePath, depth, ancestors, mode, p
 		el.className = "inline-note-rendered markdown-rendered";
 		renderComponent = new Component();
 		renderComponent.load();
-		const md = currentContent.trim() === "" ? "" : currentContent;
-		if (md === "") {
+		if (currentContent.trim() === "") {
 			const empty = el.appendChild(document.createElement("div"));
 			empty.className = "inline-note-empty";
 			empty.textContent = "Empty note — click to write.";
 		} else {
-			MarkdownRenderer.render(app, md, el, childSourcePath, renderComponent).catch(
+			MarkdownRenderer.render(app, currentContent, el, childSourcePath, renderComponent).catch(
 				() => {
 					el.textContent = currentContent;
 				}
@@ -394,14 +482,73 @@ function buildInlineBody(plugin, linkText, sourcePath, depth, ancestors, mode, p
 				return;
 			}
 			mountEditor();
-			if (editor) editor.focus();
 		});
 	};
 
-	/* source editor view */
-	const mountEditor = () => {
-		clearBody();
-		editor = new EditorView({
+	/* preferred editing view: Obsidian's own embedded editor (the
+	 * Canvas mechanism). Returns a promise resolving to success. */
+	const mountNative = async (file) => {
+		const factory =
+			app.embedRegistry &&
+			app.embedRegistry.embedByExtension &&
+			app.embedRegistry.embedByExtension.md;
+		if (!factory) return false;
+		const container = document.createElement("div");
+		container.className = "inline-note-native markdown-rendered";
+		try {
+			const embed = factory({ app, containerEl: container, state: {} }, file, "");
+			if (!embed || typeof embed.showEditor !== "function") return false;
+			embed.editable = true;
+			wrap.appendChild(container);
+			embed.load();
+			if (typeof embed.loadFile === "function") await embed.loadFile();
+			embed.showEditor();
+			if (!embed.editMode) {
+				embed.unload();
+				container.remove();
+				return false;
+			}
+			nativeEmbed = embed;
+
+			// editor commands (bold, checkbox, …) target the active editor
+			container.addEventListener("focusin", () => {
+				try {
+					app.workspace.activeEditor = embed;
+				} catch (e) {
+					/* ignore */
+				}
+			});
+			container.addEventListener("focusout", (e) => {
+				if (e.relatedTarget instanceof Node && wrap.contains(e.relatedTarget)) return;
+				if (focusMovedToPopover(e)) return;
+				if (!nativeEmbed) return;
+				leaveBody(bodyText());
+			});
+
+			// focus the editor so typing starts immediately
+			const cm = embed.editMode.editor && embed.editMode.editor.cm;
+			if (cm && typeof cm.focus === "function") cm.focus();
+			else {
+				const content = container.querySelector(".cm-content");
+				if (content) content.focus();
+			}
+			return true;
+		} catch (e) {
+			console.error("inline-note: native editor failed, falling back", e);
+			try {
+				if (nativeEmbed) nativeEmbed.unload();
+			} catch (e2) {
+				/* ignore */
+			}
+			nativeEmbed = null;
+			container.remove();
+			return false;
+		}
+	};
+
+	/* fallback editing view: bare CodeMirror */
+	const mountFallback = () => {
+		fallbackEditor = new EditorView({
 			doc: currentContent,
 			parent: wrap,
 			extensions: [
@@ -421,7 +568,6 @@ function buildInlineBody(plugin, linkText, sourcePath, depth, ancestors, mode, p
 						);
 					}
 				}),
-				// [[ link suggestions, like Obsidian's native suggester
 				...(AUTOCOMPLETE
 					? [
 							AUTOCOMPLETE.autocompletion({
@@ -431,9 +577,6 @@ function buildInlineBody(plugin, linkText, sourcePath, depth, ancestors, mode, p
 							keymap.of(AUTOCOMPLETE.completionKeymap),
 					  ]
 					: []),
-				// links with hidden brackets act like native links:
-				// click opens the note, Cmd/Ctrl+click opens a new tab;
-				// dropped files insert links/embeds at the drop point
 				EditorView.domEventHandlers({
 					mousedown: (e, view) => {
 						const el =
@@ -465,12 +608,12 @@ function buildInlineBody(plugin, linkText, sourcePath, depth, ancestors, mode, p
 							view.state.selection.main.head;
 						collectDropLinks(e)
 							.then((text) => {
-								if (!text || !editor) return;
-								editor.dispatch({
+								if (!text || !fallbackEditor) return;
+								fallbackEditor.dispatch({
 									changes: { from: pos, insert: text },
 									selection: { anchor: pos + text.length },
 								});
-								editor.focus();
+								fallbackEditor.focus();
 							})
 							.catch((err) =>
 								new Notice("Inline Note: drop failed — " + err.message)
@@ -487,36 +630,29 @@ function buildInlineBody(plugin, linkText, sourcePath, depth, ancestors, mode, p
 				EditorView.contentAttributes.of({ "aria-label": linkText }),
 			],
 		});
-		editor.dom.classList.add("inline-note-editor");
-		// When focus leaves the body entirely (not just into a nested
-		// child editor, which lives inside this DOM), save and go back
-		// to the rendered view.
-		editor.dom.addEventListener("focusout", (e) => {
+		fallbackEditor.dom.classList.add("inline-note-editor");
+		fallbackEditor.dom.addEventListener("focusout", (e) => {
 			if (e.relatedTarget instanceof Node && wrap.contains(e.relatedTarget)) return;
-			if (!editor) return;
-			currentContent = editor.state.doc.toString();
-			if (currentContent.trim() === "") {
-				// leaving an empty body: if this note was created by the
-				// plugin, remove it again and collapse instead of keeping
-				// a stray blank note around
-				plugin
-					.maybeReclaimEmpty(linkText, sourcePath, currentContent)
-					.then((reclaimed) => {
-						if (reclaimed) {
-							dirty = false;
-							parentView.dispatch({
-								effects: setInlineState.of({ link: linkText, state: "closed" }),
-							});
-						} else {
-							saveSelf();
-							mountRendered();
-						}
-					});
-				return;
-			}
-			saveSelf();
-			mountRendered();
+			if (focusMovedToPopover(e)) return;
+			if (!fallbackEditor) return;
+			leaveBody(fallbackEditor.state.doc.toString());
 		});
+		fallbackEditor.focus();
+	};
+
+	const mountEditor = () => {
+		clearBody();
+		const file = plugin.resolveLink(linkText, sourcePath);
+		if (file) {
+			mountNative(file).then((ok) => {
+				if (!ok && wrap.isConnected && !nativeEmbed && !fallbackEditor) {
+					clearBody();
+					mountFallback();
+				}
+			});
+		} else {
+			mountFallback();
+		}
 	};
 
 	const mountPreview = () => {
@@ -540,6 +676,23 @@ function buildInlineBody(plugin, linkText, sourcePath, depth, ancestors, mode, p
 	const loadContent = (attempt) => {
 		const file = plugin.resolveLink(linkText, sourcePath);
 		if (file) {
+			// guard against cycles and runaway nesting across native
+			// editors, where CM state can't carry ancestry — the DOM can
+			const domAnc = domAncestorPaths(wrap);
+			const allAnc = ancestors.concat(domAnc);
+			if (allAnc.includes(file.path) || domAnc.length >= MAX_DEPTH) {
+				const msg = wrap.appendChild(document.createElement("div"));
+				msg.className = "inline-note-error";
+				msg.textContent = allAnc.includes(file.path)
+					? "Already open above — click to open in a tab."
+					: "Max nesting depth — click to open in a tab.";
+				msg.style.cursor = "pointer";
+				msg.addEventListener("click", () =>
+					app.workspace.openLinkText(linkText, sourcePath, false)
+				);
+				return;
+			}
+			wrap.dataset.notePath = file.path;
 			childSourcePath = file.path;
 			childAncestors = ancestors.concat([file.path]);
 			app.vault.read(file).then((content) => {
@@ -548,7 +701,6 @@ function buildInlineBody(plugin, linkText, sourcePath, depth, ancestors, mode, p
 					mountPreview();
 				} else if (plugin.consumePendingFocus(linkText)) {
 					mountEditor();
-					if (editor) editor.focus();
 				} else {
 					mountRendered();
 				}
@@ -567,8 +719,7 @@ function buildInlineBody(plugin, linkText, sourcePath, depth, ancestors, mode, p
 		el: wrap,
 		destroy: () => {
 			saveSelf();
-			if (renderComponent) renderComponent.unload();
-			if (editor) editor.destroy();
+			clearBody();
 		},
 	};
 }
@@ -599,7 +750,7 @@ function buildDecorationField(plugin, getSourcePath, depth, getAncestors) {
 
 		const text = state.doc.toString();
 
-		// ![[embeds]] inside nested editors render through Obsidian's
+		// ![[embeds]] inside fallback editors render through Obsidian's
 		// MarkdownRenderer; raw text is shown while the cursor touches them
 		if (depth > 0) {
 			EMBED_RE.lastIndex = 0;
@@ -629,7 +780,7 @@ function buildDecorationField(plugin, getSourcePath, depth, getAncestors) {
 			const start = m.index;
 			const end = start + m[0].length;
 
-			// inside nested editors there's no Obsidian markdown mode, so
+			// inside fallback editors there's no Obsidian markdown mode, so
 			// style [[links]] ourselves — like live preview, the brackets
 			// are hidden unless the cursor is inside the link
 			if (depth > 0) {
@@ -657,7 +808,7 @@ function buildDecorationField(plugin, getSourcePath, depth, getAncestors) {
 			// no inline body for links that would recurse into an ancestor
 			// (self-links, A→B→A loops) or past the depth cap
 			const canInline = exists && depth < MAX_DEPTH && !ancestors.includes(file.path);
-			const inlineState = getInlineState(state, linkText, depth);
+			const inlineState = getInlineState(state, linkText);
 			const open =
 				canInline && inlineState !== "closed" && !rendered.has(linkText);
 
@@ -697,7 +848,7 @@ function buildDecorationField(plugin, getSourcePath, depth, getAncestors) {
 		update(value, tr) {
 			if (
 				tr.docChanged ||
-				// nested editors reveal/hide brackets and embeds as the
+				// fallback editors reveal/hide brackets and embeds as the
 				// cursor moves or the editor gains/loses focus
 				(depth > 0 && tr.selection) ||
 				tr.effects.some((e) => e.is(setFocused) || e.is(setInlineState))
@@ -880,7 +1031,7 @@ class InlineNotePlugin extends Plugin {
 				/* new file, no cache yet */
 			}
 			const long = content.length > PREVIEW_LIMIT;
-			const current = getInlineState(view.state, linkText, depth);
+			const current = getInlineState(view.state, linkText);
 
 			let next;
 			if (!existedBefore) next = "preview"; // brand-new note: empty, opens as editor

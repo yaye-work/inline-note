@@ -113,6 +113,28 @@
 	display: block;
 }
 
+/* --- native embedded editor (live preview inside the body) --- */
+.inline-note-native {
+	width: 100%;
+}
+.inline-note-native .markdown-embed,
+.inline-note-native .markdown-embed-content {
+	border: none;
+	padding: 0;
+	margin: 0;
+	background: transparent;
+}
+.inline-note-native .markdown-embed-link,
+.inline-note-native .embed-title {
+	display: none;
+}
+.inline-note-native .cm-editor {
+	background: transparent;
+}
+.inline-note-native .cm-content {
+	padding: 2px 0;
+}
+
 /* --- rendered (reading) view of an idle inline note --- */
 .inline-note-rendered {
 	font-family: var(--font-text);
