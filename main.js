@@ -845,10 +845,9 @@ function buildToggleKeymap(plugin, getSourcePath, depth) {
 	return Prec.high(
 		keymap.of([
 			{
-				// Tab immediately after "]]": cycle the inline note —
-				// create+open if missing, preview → full for long notes,
-				// then collapse. Never fires elsewhere, so indentation is
-				// safe.
+				// Tab immediately after "]]": toggle the inline note —
+				// create+open if missing. Never fires elsewhere, so
+				// indentation is safe.
 				key: "Tab",
 				run: (view) => {
 					const linkText = linkAt(view.state, view.state.selection.main.head, true);
@@ -856,6 +855,13 @@ function buildToggleKeymap(plugin, getSourcePath, depth) {
 					plugin.toggleInlineNote(view, linkText, getSourcePath(view.state), depth);
 					return true;
 				},
+			},
+			{
+				// Shift+Tab: collapse every open inline note in this
+				// editor. Falls through (list outdent etc.) when none
+				// are open.
+				key: "Shift-Tab",
+				run: (view) => plugin.collapseAllInline(view, getSourcePath(view.state)),
 			},
 		])
 	);
@@ -951,6 +957,17 @@ class InlineNotePlugin extends Plugin {
 				if (editor.cm) this.toggleInlineNote(editor.cm, target, sourcePath, 0);
 			},
 		});
+
+		this.addCommand({
+			id: "collapse-all-inline-notes",
+			name: "Collapse all inline notes",
+			editorCallback: (editor, ctx) => {
+				const sourcePath = (ctx && ctx.file && ctx.file.path) || "";
+				if (editor.cm && !this.collapseAllInline(editor.cm, sourcePath)) {
+					new Notice("No open inline notes.");
+				}
+			},
+		});
 	}
 
 	onunload() {
@@ -980,6 +997,41 @@ class InlineNotePlugin extends Plugin {
 			return true;
 		}
 		return false;
+	}
+
+	/** Collapse every open inline note in `view`. Returns true when at
+	 * least one was open (so Shift+Tab can fall through otherwise). */
+	collapseAllInline(view, sourcePath) {
+		const text = view.state.doc.toString();
+		const toClose = [];
+		const seen = new Set();
+		LINK_RE.lastIndex = 0;
+		let m;
+		while ((m = LINK_RE.exec(text)) !== null) {
+			if (m.index > 0 && text[m.index - 1] === "!") continue;
+			const linkText = m[1].trim();
+			if (!linkText || seen.has(linkText)) continue;
+			seen.add(linkText);
+			if (getInlineState(view.state, linkText) !== "closed") toClose.push(linkText);
+		}
+		if (!toClose.length) return false;
+		view.dispatch({
+			effects: toClose.map((l) => setInlineState.of({ link: l, state: "closed" })),
+		});
+		view.focus();
+		// reclaim any still-empty notes we created (see toggleInlineNote)
+		window.setTimeout(() => {
+			for (const l of toClose) {
+				this.maybeReclaimEmpty(l, sourcePath, null).then((reclaimed) => {
+					if (reclaimed) {
+						view.dispatch({
+							effects: setInlineState.of({ link: l, state: "closed" }),
+						});
+					}
+				});
+			}
+		}, 600);
+		return true;
 	}
 
 	/** Toggle the inline note: create+open if missing, otherwise
