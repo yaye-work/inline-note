@@ -169,3 +169,26 @@
 .inline-note-editor .inline-note-flow {
 	margin: 2px 0 4px 0;
 }
+
+/* --- [[ link suggestion popup inside nested editors --- */
+.inline-note-editor .cm-tooltip.cm-tooltip-autocomplete {
+	background-color: var(--background-primary);
+	border: 1px solid var(--background-modifier-border);
+	border-radius: var(--radius-m);
+	box-shadow: var(--shadow-s);
+	font-family: var(--font-interface);
+	font-size: var(--font-ui-small);
+	color: var(--text-normal);
+	z-index: var(--layer-popover);
+}
+.inline-note-editor .cm-tooltip-autocomplete > ul {
+	max-height: 14em;
+	font-family: var(--font-interface);
+}
+.inline-note-editor .cm-tooltip-autocomplete > ul > li {
+	padding: 3px 8px;
+}
+.inline-note-editor .cm-tooltip-autocomplete > ul > li[aria-selected] {
+	background-color: var(--background-modifier-hover);
+	color: var(--text-normal);
+}

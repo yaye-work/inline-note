@@ -15,6 +15,13 @@ const { Decoration, WidgetType, EditorView, keymap } = require("@codemirror/view
 const { StateEffect, StateField, Prec } = require("@codemirror/state");
 const { history, defaultKeymap, historyKeymap } = require("@codemirror/commands");
 
+let AUTOCOMPLETE = null;
+try {
+	AUTOCOMPLETE = require("@codemirror/autocomplete");
+} catch (e) {
+	/* older Obsidian without the module: no [[ suggestions, all else works */
+}
+
 const MAX_DEPTH = 5;
 const PREVIEW_LIMIT = 200;
 
@@ -55,6 +62,21 @@ const LINK_RE = /\[\[([^\[\]|#\n]+)(?:[#|][^\]\n]*)?\]\]/g;
 const EMBED_RE = /!\[\[([^\[\]\n]+)\]\]/g;
 // links like [[photo.png]] name a non-markdown file — never inline those
 const NON_MD_EXT_RE = /\.(?!md$)[a-zA-Z0-9]{1,8}$/;
+
+/* completion source for [[ inside nested editors: suggests vault files,
+ * like Obsidian's native link suggester */
+function linkCompletionSource(plugin) {
+	return (ctx) => {
+		const m = ctx.matchBefore(/!?\[\[[^\[\]]*$/);
+		if (!m) return null;
+		const from = m.from + m.text.indexOf("[[") + 2;
+		const options = plugin.app.vault.getFiles().map((f) => {
+			const label = f.extension === "md" ? f.basename : f.name;
+			return { label, type: "file", apply: label + "]]" };
+		});
+		return { from, options, validFor: /^[^\[\]]*$/ };
+	};
+}
 
 /* nested editors reveal [[brackets]] only while focused with the
  * cursor inside the link — so we track focus as editor state */
@@ -277,6 +299,41 @@ function buildInlineBody(plugin, linkText, sourcePath, depth, ancestors, mode, p
 		while (wrap.firstChild) wrap.removeChild(wrap.firstChild);
 	};
 
+	const mdLinkFor = (file) => {
+		let link = app.fileManager.generateMarkdownLink(file, childSourcePath);
+		if (file.extension !== "md" && !link.startsWith("!")) link = "!" + link;
+		return link;
+	};
+
+	/** Resolve a drop into link text: files dragged from Obsidian's file
+	 * explorer link directly; OS file drops are imported as attachments
+	 * first. Returns null for drops we don't handle. */
+	const dropIsHandleable = (e) => {
+		const dr = app.dragManager && app.dragManager.draggable;
+		if (dr && (dr.file || (dr.files && dr.files.length))) return true;
+		return !!(e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files.length);
+	};
+	const collectDropLinks = async (e) => {
+		const dr = app.dragManager && app.dragManager.draggable;
+		const links = [];
+		if (dr && (dr.file || (dr.files && dr.files.length))) {
+			const files = dr.files || [dr.file];
+			for (const f of files) {
+				if (f && f.path) links.push(mdLinkFor(f));
+			}
+		} else if (e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files.length) {
+			for (const f of Array.from(e.dataTransfer.files)) {
+				const path = app.fileManager.getAvailablePathForAttachment
+					? await app.fileManager.getAvailablePathForAttachment(f.name, childSourcePath)
+					: f.name;
+				const buf = await f.arrayBuffer();
+				const created = await app.vault.createBinary(path, buf);
+				links.push(mdLinkFor(created));
+			}
+		}
+		return links.length ? links.join("\n") : null;
+	};
+
 	/* rendered (reading) view — real markdown incl. embeds */
 	const mountRendered = () => {
 		clearBody();
@@ -296,6 +353,28 @@ function buildInlineBody(plugin, linkText, sourcePath, depth, ancestors, mode, p
 				}
 			);
 		}
+		// dropping files onto the rendered body appends links/embeds
+		el.addEventListener("dragover", (e) => {
+			if (dropIsHandleable(e)) e.preventDefault();
+		});
+		el.addEventListener("drop", (e) => {
+			if (!dropIsHandleable(e)) return;
+			e.preventDefault();
+			e.stopPropagation();
+			collectDropLinks(e)
+				.then(async (text) => {
+					if (!text) return;
+					const file = plugin.resolveLink(linkText, sourcePath);
+					if (!file) return;
+					currentContent =
+						currentContent.trimEnd() === ""
+							? text
+							: currentContent.replace(/\n*$/, "\n") + text;
+					await app.vault.modify(file, currentContent);
+					mountRendered();
+				})
+				.catch((err) => new Notice("Inline Note: drop failed — " + err.message));
+		});
 		el.addEventListener("click", (e) => {
 			const anchor =
 				e.target instanceof Element && e.target.closest("a.internal-link");
@@ -342,8 +421,19 @@ function buildInlineBody(plugin, linkText, sourcePath, depth, ancestors, mode, p
 						);
 					}
 				}),
+				// [[ link suggestions, like Obsidian's native suggester
+				...(AUTOCOMPLETE
+					? [
+							AUTOCOMPLETE.autocompletion({
+								override: [linkCompletionSource(plugin)],
+								icons: false,
+							}),
+							keymap.of(AUTOCOMPLETE.completionKeymap),
+					  ]
+					: []),
 				// links with hidden brackets act like native links:
-				// click opens the note, Cmd/Ctrl+click opens a new tab
+				// click opens the note, Cmd/Ctrl+click opens a new tab;
+				// dropped files insert links/embeds at the drop point
 				EditorView.domEventHandlers({
 					mousedown: (e, view) => {
 						const el =
@@ -360,6 +450,31 @@ function buildInlineBody(plugin, linkText, sourcePath, depth, ancestors, mode, p
 							childSourcePath,
 							e.metaKey || e.ctrlKey
 						);
+						return true;
+					},
+					dragover: (e) => {
+						if (!dropIsHandleable(e)) return false;
+						e.preventDefault();
+						return true;
+					},
+					drop: (e, view) => {
+						if (!dropIsHandleable(e)) return false;
+						e.preventDefault();
+						const pos =
+							view.posAtCoords({ x: e.clientX, y: e.clientY }) ??
+							view.state.selection.main.head;
+						collectDropLinks(e)
+							.then((text) => {
+								if (!text || !editor) return;
+								editor.dispatch({
+									changes: { from: pos, insert: text },
+									selection: { anchor: pos + text.length },
+								});
+								editor.focus();
+							})
+							.catch((err) =>
+								new Notice("Inline Note: drop failed — " + err.message)
+							);
 						return true;
 					},
 				}),
