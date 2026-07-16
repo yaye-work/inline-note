@@ -495,6 +495,25 @@ function buildInlineBody(plugin, linkText, sourcePath, depth, ancestors, mode, p
 			if (e.relatedTarget instanceof Node && wrap.contains(e.relatedTarget)) return;
 			if (!editor) return;
 			currentContent = editor.state.doc.toString();
+			if (currentContent.trim() === "") {
+				// leaving an empty body: if this note was created by the
+				// plugin, remove it again and collapse instead of keeping
+				// a stray blank note around
+				plugin
+					.maybeReclaimEmpty(linkText, sourcePath, currentContent)
+					.then((reclaimed) => {
+						if (reclaimed) {
+							dirty = false;
+							parentView.dispatch({
+								effects: setInlineState.of({ link: linkText, state: "closed" }),
+							});
+						} else {
+							saveSelf();
+							mountRendered();
+						}
+					});
+				return;
+			}
 			saveSelf();
 			mountRendered();
 		});
@@ -758,6 +777,9 @@ class InlineNoteSettingTab extends PluginSettingTab {
 class InlineNotePlugin extends Plugin {
 	async onload() {
 		this._pendingFocus = null;
+		// notes this plugin created this session — candidates for reclaim
+		// (deletion) if they're still empty when their inline body closes
+		this._createdInline = new Set();
 		this.settings = Object.assign({}, DEFAULT_SETTINGS, await this.loadData());
 		this.applyNestStyle();
 		this.addSettingTab(new InlineNoteSettingTab(this.app, this));
@@ -876,7 +898,22 @@ class InlineNotePlugin extends Plugin {
 			// plugins (e.g. graph preview panes watching focusin/focusout)
 			// read as "the user left the pane". Hand focus to the editor
 			// that owns the link instead.
-			if (next === "closed") view.focus();
+			if (next === "closed") {
+				view.focus();
+				// If this was a note we created and it's still empty,
+				// remove it again — an accidental click shouldn't leave
+				// stray blank notes. Wait out the body's closing save
+				// first so freshly typed text is never misjudged.
+				window.setTimeout(() => {
+					this.maybeReclaimEmpty(linkText, sourcePath, null).then((reclaimed) => {
+						if (reclaimed) {
+							view.dispatch({
+								effects: setInlineState.of({ link: linkText, state: "closed" }),
+							});
+						}
+					});
+				}, 600);
+			}
 		} catch (err) {
 			new Notice("Inline Note: could not create note — " + err.message);
 		}
@@ -901,7 +938,35 @@ class InlineNotePlugin extends Plugin {
 		if (existing) return existing;
 		const folder = this.app.fileManager.getNewFileParent(sourcePath);
 		const path = (folder.path === "/" ? "" : folder.path + "/") + linkText + ".md";
-		return await this.app.vault.create(path, "");
+		const created = await this.app.vault.create(path, "");
+		this._createdInline.add(created.path);
+		return created;
+	}
+
+	/** If `linkText` resolves to a note this plugin created this session
+	 * and it's (still) empty, move it to trash. Never touches notes the
+	 * plugin didn't create. Returns true when the note was reclaimed. */
+	async maybeReclaimEmpty(linkText, sourcePath, knownContent) {
+		const file = this.resolveLink(linkText, sourcePath);
+		if (!file || file.extension !== "md") return false;
+		if (!this._createdInline.has(file.path)) return false;
+		let content = knownContent;
+		if (content == null) {
+			try {
+				content = await this.app.vault.read(file);
+			} catch (e) {
+				return false;
+			}
+		}
+		if (content.trim() !== "") return false;
+		this._createdInline.delete(file.path);
+		if (this.app.fileManager.trashFile) {
+			await this.app.fileManager.trashFile(file);
+		} else {
+			await this.app.vault.trash(file, true);
+		}
+		new Notice("Inline Note: removed empty note “" + linkText + "”.");
+		return true;
 	}
 }
 
