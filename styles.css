@@ -113,6 +113,31 @@
 	display: block;
 }
 
+/* --- rendered (reading) view of an idle inline note --- */
+.inline-note-rendered {
+	font-family: var(--font-text);
+	font-size: var(--font-text-size);
+	line-height: var(--line-height-normal);
+	color: var(--text-normal);
+	padding: 2px 0;
+	cursor: text;
+}
+.inline-note-rendered > p:first-child {
+	margin-top: 0;
+}
+.inline-note-rendered > p:last-child {
+	margin-bottom: 0;
+}
+.inline-note-rendered img {
+	max-width: 100%;
+}
+.inline-note-empty {
+	color: var(--text-faint);
+	font-size: var(--font-ui-small);
+	font-style: italic;
+	cursor: pointer;
+}
+
 /* --- nested CodeMirror editor --- */
 .inline-note-editor {
 	background: transparent;

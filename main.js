@@ -24,7 +24,7 @@ const DEFAULT_SETTINGS = {
 
 /* ------------------------------------------------------------------ */
 /* State. Each link is "closed", "preview" (truncated if the note is   */
-/* long, a full editor otherwise), or "full". Defaults: top level      */
+/* long, the full body otherwise), or "full". Defaults: top level      */
 /* opens in preview, nested links start closed.                        */
 /* ------------------------------------------------------------------ */
 
@@ -53,6 +53,8 @@ function getInlineState(state, linkText, depth) {
 
 const LINK_RE = /\[\[([^\[\]|#\n]+)(?:[#|][^\]\n]*)?\]\]/g;
 const EMBED_RE = /!\[\[([^\[\]\n]+)\]\]/g;
+// links like [[photo.png]] name a non-markdown file — never inline those
+const NON_MD_EXT_RE = /\.(?!md$)[a-zA-Z0-9]{1,8}$/;
 
 /* nested editors reveal [[brackets]] only while focused with the
  * cursor inside the link — so we track focus as editor state */
@@ -147,8 +149,8 @@ class LinkToggleWidget extends WidgetType {
 }
 
 /* ------------------------------------------------------------------ */
-/* Embed widget: renders ![[...]] inside nested editors through        */
-/* Obsidian's MarkdownRenderer (PDFs, images, note embeds).            */
+/* Embed widget: renders ![[...]] inside nested source editors         */
+/* through Obsidian's MarkdownRenderer (PDFs, images, note embeds).    */
 /* ------------------------------------------------------------------ */
 
 class EmbedWidget extends WidgetType {
@@ -165,7 +167,7 @@ class EmbedWidget extends WidgetType {
 
 	toDOM() {
 		const el = document.createElement("span");
-		el.className = "inline-note-embedded";
+		el.className = "inline-note-embedded markdown-rendered";
 		this._component = new Component();
 		this._component.load();
 		MarkdownRenderer.render(
@@ -192,6 +194,9 @@ class EmbedWidget extends WidgetType {
 
 /* ------------------------------------------------------------------ */
 /* Inline body: no card chrome — the link is the title.                */
+/* Idle bodies show the note RENDERED (real markdown: headings,        */
+/* embeds, images, PDFs). Click into the body to edit the source;      */
+/* focus leaving the body renders it again.                            */
 /* ------------------------------------------------------------------ */
 
 class InlineNoteWidget extends WidgetType {
@@ -244,20 +249,81 @@ function buildInlineBody(plugin, linkText, sourcePath, depth, ancestors, mode, p
 	wrap.className = "inline-note-flow";
 
 	let editor = null;
+	let renderComponent = null;
 	let dirty = false;
+	let currentContent = "";
+	let childSourcePath = sourcePath;
+	let childAncestors = ancestors;
 
 	const saveSelf = async () => {
 		if (!editor || !dirty) return;
 		const file = plugin.resolveLink(linkText, sourcePath);
 		if (!file) return;
 		dirty = false;
-		await app.vault.modify(file, editor.state.doc.toString());
+		currentContent = editor.state.doc.toString();
+		await app.vault.modify(file, currentContent);
 	};
 	const debouncedSave = debounce(saveSelf, 500, true);
 
-	const mountEditor = (content, childSourcePath, childAncestors) => {
+	const clearBody = () => {
+		if (renderComponent) {
+			renderComponent.unload();
+			renderComponent = null;
+		}
+		if (editor) {
+			editor.destroy();
+			editor = null;
+		}
+		while (wrap.firstChild) wrap.removeChild(wrap.firstChild);
+	};
+
+	/* rendered (reading) view — real markdown incl. embeds */
+	const mountRendered = () => {
+		clearBody();
+		const el = wrap.appendChild(document.createElement("div"));
+		el.className = "inline-note-rendered markdown-rendered";
+		renderComponent = new Component();
+		renderComponent.load();
+		const md = currentContent.trim() === "" ? "" : currentContent;
+		if (md === "") {
+			const empty = el.appendChild(document.createElement("div"));
+			empty.className = "inline-note-empty";
+			empty.textContent = "Empty note — click to write.";
+		} else {
+			MarkdownRenderer.render(app, md, el, childSourcePath, renderComponent).catch(
+				() => {
+					el.textContent = currentContent;
+				}
+			);
+		}
+		el.addEventListener("click", (e) => {
+			const anchor =
+				e.target instanceof Element && e.target.closest("a.internal-link");
+			if (anchor) {
+				e.preventDefault();
+				const target =
+					anchor.getAttribute("data-href") || anchor.getAttribute("href") || "";
+				if (target)
+					app.workspace.openLinkText(target, childSourcePath, e.metaKey || e.ctrlKey);
+				return;
+			}
+			// let embeds and external links handle their own clicks
+			if (
+				e.target instanceof Element &&
+				e.target.closest(".internal-embed, a.external-link, img, iframe, video, audio")
+			) {
+				return;
+			}
+			mountEditor();
+			if (editor) editor.focus();
+		});
+	};
+
+	/* source editor view */
+	const mountEditor = () => {
+		clearBody();
 		editor = new EditorView({
-			doc: content,
+			doc: currentContent,
 			parent: wrap,
 			extensions: [
 				history(),
@@ -307,14 +373,23 @@ function buildInlineBody(plugin, linkText, sourcePath, depth, ancestors, mode, p
 			],
 		});
 		editor.dom.classList.add("inline-note-editor");
-		editor.contentDOM.addEventListener("blur", () => saveSelf());
-		if (plugin.consumePendingFocus(linkText)) editor.focus();
+		// When focus leaves the body entirely (not just into a nested
+		// child editor, which lives inside this DOM), save and go back
+		// to the rendered view.
+		editor.dom.addEventListener("focusout", (e) => {
+			if (e.relatedTarget instanceof Node && wrap.contains(e.relatedTarget)) return;
+			if (!editor) return;
+			currentContent = editor.state.doc.toString();
+			saveSelf();
+			mountRendered();
+		});
 	};
 
-	const mountPreview = (content) => {
+	const mountPreview = () => {
+		clearBody();
 		const preview = wrap.appendChild(document.createElement("div"));
 		preview.className = "inline-note-preview";
-		preview.textContent = content.slice(0, PREVIEW_LIMIT).trimEnd() + "…";
+		preview.textContent = currentContent.slice(0, PREVIEW_LIMIT).trimEnd() + "…";
 		preview.setAttribute("aria-label", "Expand (Tab after ]])");
 		preview.addEventListener("click", (e) => {
 			e.preventDefault();
@@ -331,13 +406,17 @@ function buildInlineBody(plugin, linkText, sourcePath, depth, ancestors, mode, p
 	const loadContent = (attempt) => {
 		const file = plugin.resolveLink(linkText, sourcePath);
 		if (file) {
-			const childSourcePath = file.path;
-			const childAncestors = ancestors.concat([file.path]);
+			childSourcePath = file.path;
+			childAncestors = ancestors.concat([file.path]);
 			app.vault.read(file).then((content) => {
+				currentContent = content;
 				if (mode === "preview" && content.length > PREVIEW_LIMIT) {
-					mountPreview(content);
+					mountPreview();
+				} else if (plugin.consumePendingFocus(linkText)) {
+					mountEditor();
+					if (editor) editor.focus();
 				} else {
-					mountEditor(content, childSourcePath, childAncestors);
+					mountRendered();
 				}
 			});
 		} else if (attempt < 10) {
@@ -354,6 +433,7 @@ function buildInlineBody(plugin, linkText, sourcePath, depth, ancestors, mode, p
 		el: wrap,
 		destroy: () => {
 			saveSelf();
+			if (renderComponent) renderComponent.unload();
 			if (editor) editor.destroy();
 		},
 	};
@@ -431,6 +511,14 @@ function buildDecorationField(plugin, getSourcePath, depth, getAncestors) {
 			}
 
 			const file = plugin.resolveLink(linkText, sourcePath);
+			// only markdown notes are inline-able; links to PDFs, images,
+			// and other binary files keep Obsidian's native behavior —
+			// no button, no inline body, and never a raw binary read
+			const isMd = file
+				? file.extension === "md"
+				: !NON_MD_EXT_RE.test(linkText);
+			if (!isMd) continue;
+
 			const exists = !!file;
 			// no inline body for links that would recurse into an ancestor
 			// (self-links, A→B→A loops) or past the depth cap
@@ -636,7 +724,17 @@ class InlineNotePlugin extends Plugin {
 			return;
 		}
 		try {
-			const existedBefore = !!this.resolveLink(linkText, sourcePath);
+			const existing = this.resolveLink(linkText, sourcePath);
+			// non-markdown targets (images, PDFs, …) are never inlined
+			if (existing && existing.extension !== "md") {
+				this.app.workspace.openLinkText(linkText, sourcePath, false);
+				return;
+			}
+			if (!existing && NON_MD_EXT_RE.test(linkText)) {
+				new Notice("Inline Note: not a markdown note.");
+				return;
+			}
+			const existedBefore = !!existing;
 			const file = await this.ensureFile(linkText, sourcePath);
 			let content = "";
 			try {
@@ -653,8 +751,10 @@ class InlineNotePlugin extends Plugin {
 			else if (current === "preview") next = long ? "full" : "closed";
 			else next = "closed";
 
-			const rendersEditor = next === "full" || (next === "preview" && !long);
-			if (rendersEditor) this._pendingFocus = linkText;
+			const opensBody = next === "full" || (next === "preview" && !long);
+			// focus the editor when opening via keyboard so typing can start
+			// immediately — except a long note's truncated preview
+			if (opensBody) this._pendingFocus = linkText;
 			view.dispatch({ effects: setInlineState.of({ link: linkText, state: next }) });
 			// Collapsing destroys the nested editor; if it held keyboard
 			// focus, focus would silently fall to <body>, which other
