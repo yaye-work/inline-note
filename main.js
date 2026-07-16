@@ -30,10 +30,10 @@ const DEFAULT_SETTINGS = {
 };
 
 /* ------------------------------------------------------------------ */
-/* State. Each link is "closed", "preview" (truncated if the note is   */
-/* long, the full body otherwise), or "full". Links in a real note     */
-/* view open in preview by default; links inside inline bodies start   */
-/* closed (otherwise chains of notes would cascade open).              */
+/* State. Each link is "closed" or "preview" (open). Links in a real   */
+/* note view open by default; links inside inline bodies start closed  */
+/* (otherwise chains of notes would cascade open). Long notes get a    */
+/* fixed-height scrollable body instead of a truncated preview.        */
 /* ------------------------------------------------------------------ */
 
 const setInlineState = StateEffect.define();
@@ -239,21 +239,19 @@ class EmbedWidget extends WidgetType {
 /* ------------------------------------------------------------------ */
 
 class InlineNoteWidget extends WidgetType {
-	constructor(plugin, linkText, sourcePath, depth, ancestors, mode) {
+	constructor(plugin, linkText, sourcePath, depth, ancestors) {
 		super();
 		this.plugin = plugin;
 		this.linkText = linkText;
 		this.sourcePath = sourcePath;
 		this.depth = depth;
 		this.ancestors = ancestors;
-		this.mode = mode; // "preview" | "full"
 	}
 
 	eq(other) {
 		return (
 			other.linkText === this.linkText &&
-			other.sourcePath === this.sourcePath &&
-			other.mode === this.mode
+			other.sourcePath === this.sourcePath
 		);
 	}
 
@@ -264,7 +262,6 @@ class InlineNoteWidget extends WidgetType {
 			this.sourcePath,
 			this.depth,
 			this.ancestors,
-			this.mode,
 			view
 		);
 		this._destroyPanel = panel.destroy;
@@ -295,7 +292,7 @@ function domAncestorPaths(el) {
 	return out;
 }
 
-function buildInlineBody(plugin, linkText, sourcePath, depth, ancestors, mode, parentView) {
+function buildInlineBody(plugin, linkText, sourcePath, depth, ancestors, parentView) {
 	const app = plugin.app;
 
 	const wrap = document.createElement("div");
@@ -655,22 +652,6 @@ function buildInlineBody(plugin, linkText, sourcePath, depth, ancestors, mode, p
 		}
 	};
 
-	const mountPreview = () => {
-		clearBody();
-		const preview = wrap.appendChild(document.createElement("div"));
-		preview.className = "inline-note-preview";
-		preview.textContent = currentContent.slice(0, PREVIEW_LIMIT).trimEnd() + "…";
-		preview.setAttribute("aria-label", "Expand (Tab after ]])");
-		preview.addEventListener("click", (e) => {
-			e.preventDefault();
-			e.stopPropagation();
-			plugin._pendingFocus = linkText;
-			parentView.dispatch({
-				effects: setInlineState.of({ link: linkText, state: "full" }),
-			});
-		});
-	};
-
 	// The file may have been created a moment ago and the metadata cache
 	// might not have caught up yet — retry resolution briefly.
 	const loadContent = (attempt) => {
@@ -697,9 +678,9 @@ function buildInlineBody(plugin, linkText, sourcePath, depth, ancestors, mode, p
 			childAncestors = ancestors.concat([file.path]);
 			app.vault.read(file).then((content) => {
 				currentContent = content;
-				if (mode === "preview" && content.length > PREVIEW_LIMIT) {
-					mountPreview();
-				} else if (plugin.consumePendingFocus(linkText)) {
+				// long notes scroll inside a fixed-height body
+				wrap.classList.toggle("is-long", content.length > PREVIEW_LIMIT);
+				if (plugin.consumePendingFocus(linkText)) {
 					mountEditor();
 				} else {
 					mountRendered();
@@ -829,8 +810,7 @@ function buildDecorationField(plugin, getSourcePath, depth, getAncestors) {
 							linkText,
 							sourcePath,
 							depth + 1,
-							ancestors,
-							inlineState
+							ancestors
 						),
 						side: 2,
 						block: true,
@@ -1002,9 +982,8 @@ class InlineNotePlugin extends Plugin {
 		return false;
 	}
 
-	/** Cycle the inline note: create+open if missing; closed → preview;
-	 * preview → full (long notes) or closed (short, already fully shown);
-	 * full → closed. */
+	/** Toggle the inline note: create+open if missing, otherwise
+	 * open ↔ close. */
 	async toggleInlineNote(view, linkText, sourcePath, depth) {
 		if (depth >= MAX_DEPTH) {
 			new Notice("Inline Note: max nesting depth reached — opening in a tab.");
@@ -1023,26 +1002,15 @@ class InlineNotePlugin extends Plugin {
 				return;
 			}
 			const existedBefore = !!existing;
-			const file = await this.ensureFile(linkText, sourcePath);
-			let content = "";
-			try {
-				content = await this.app.vault.cachedRead(file);
-			} catch (e) {
-				/* new file, no cache yet */
-			}
-			const long = content.length > PREVIEW_LIMIT;
+			await this.ensureFile(linkText, sourcePath);
 			const current = getInlineState(view.state, linkText);
 
-			let next;
-			if (!existedBefore) next = "preview"; // brand-new note: empty, opens as editor
-			else if (current === "closed") next = "preview";
-			else if (current === "preview") next = long ? "full" : "closed";
-			else next = "closed";
+			const next =
+				!existedBefore || current === "closed" ? "preview" : "closed";
 
-			const opensBody = next === "full" || (next === "preview" && !long);
-			// focus the editor when opening via keyboard so typing can start
-			// immediately — except a long note's truncated preview
-			if (opensBody) this._pendingFocus = linkText;
+			// focus the editor when opening via keyboard so typing can
+			// start immediately
+			if (next === "preview") this._pendingFocus = linkText;
 			view.dispatch({ effects: setInlineState.of({ link: linkText, state: next }) });
 			// Collapsing destroys the nested editor; if it held keyboard
 			// focus, focus would silently fall to <body>, which other

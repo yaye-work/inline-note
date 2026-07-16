@@ -88,19 +88,11 @@
 	font-size: var(--font-ui-small);
 }
 
-/* --- truncated preview of long notes (click or Tab to expand) --- */
-.inline-note-preview {
-	color: var(--text-muted);
-	font-family: var(--font-text);
-	font-size: var(--font-text-size);
-	line-height: var(--line-height-normal);
-	white-space: pre-wrap;
-	cursor: pointer;
-	padding: 2px 0;
-	transition: color 120ms ease;
-}
-.inline-note-preview:hover {
-	color: var(--text-normal);
+/* --- long notes: fixed-height, scrollable body --- */
+.inline-note-flow.is-long {
+	max-height: 320px;
+	overflow-y: auto;
+	overscroll-behavior: contain;
 }
 
 /* --- rendered ![[embeds]] inside nested editors --- */
@@ -117,9 +109,15 @@
 .inline-note-native {
 	width: 100%;
 }
+/* Obsidian gives embeds their own accent bar — our body already has
+   one, so remove the embed's or the line shows doubled */
 .inline-note-native .markdown-embed,
+.inline-note-native .internal-embed,
 .inline-note-native .markdown-embed-content {
+	--embed-border-left: none;
 	border: none;
+	border-left: none;
+	box-shadow: none;
 	padding: 0;
 	margin: 0;
 	background: transparent;
