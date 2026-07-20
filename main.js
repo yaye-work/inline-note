@@ -222,10 +222,12 @@ class EmbedWidget extends WidgetType {
 }
 
 /* ------------------------------------------------------------------ */
-/* Inline body. Idle: rendered reading view. Editing: Obsidian's own   */
-/* embedded markdown editor (the Canvas mechanism) — live preview,     */
-/* native commands, native suggester, native drag & drop. Falls back   */
-/* to a bare CodeMirror editor when that internal API is unavailable.  */
+/* Inline body: Obsidian's own embedded markdown editor (the Canvas    */
+/* mechanism) — live preview, native commands, native suggester,       */
+/* native drag & drop. The same editor serves focused and idle states, */
+/* so the card always renders exactly like the note in its own pane.   */
+/* Falls back to a bare CodeMirror editor when the internal API is     */
+/* unavailable.                                                        */
 /* ------------------------------------------------------------------ */
 
 class InlineNoteWidget extends WidgetType {
@@ -293,7 +295,6 @@ function buildInlineBody(plugin, linkText, sourcePath, depth, ancestors, parentV
 
 	let fallbackEditor = null; // CM EditorView (fallback path)
 	let nativeEmbed = null; // Obsidian MarkdownEmbed (preferred path)
-	let renderComponent = null;
 	let dirty = false;
 	let currentContent = "";
 	let childSourcePath = sourcePath;
@@ -338,10 +339,6 @@ function buildInlineBody(plugin, linkText, sourcePath, depth, ancestors, parentV
 	const debouncedSave = debounce(saveSelf, 500, true);
 
 	const clearBody = () => {
-		if (renderComponent) {
-			renderComponent.unload();
-			renderComponent = null;
-		}
 		if (nativeEmbed) {
 			try {
 				nativeEmbed.unload();
@@ -389,8 +386,10 @@ function buildInlineBody(plugin, linkText, sourcePath, depth, ancestors, parentV
 		return links.length ? links.join("\n") : null;
 	};
 
-	/** shared exit path: reclaim an untouched empty note, otherwise
-	 * save and drop back to the rendered view */
+	/** shared exit path on blur: reclaim an untouched empty note,
+	 * otherwise just save. The editor stays mounted — the body is the
+	 * same live-preview editor whether focused or idle, so the card
+	 * always renders exactly like the note does in its own pane. */
 	const leaveBody = (text) => {
 		currentContent = text != null ? text : currentContent;
 		if (currentContent.trim() === "") {
@@ -404,80 +403,16 @@ function buildInlineBody(plugin, linkText, sourcePath, depth, ancestors, parentV
 						});
 					} else {
 						saveSelf();
-						mountRendered();
 					}
 				});
 			return;
 		}
 		saveSelf();
-		mountRendered();
 	};
 
-	/* rendered (reading) view — real markdown incl. embeds */
-	const mountRendered = () => {
-		clearBody();
-		const el = contentEl.appendChild(document.createElement("div"));
-		el.className = "inline-note-rendered markdown-rendered";
-		renderComponent = new Component();
-		renderComponent.load();
-		if (currentContent.trim() === "") {
-			const empty = el.appendChild(document.createElement("div"));
-			empty.className = "inline-note-empty";
-			empty.textContent = "Empty note — click to write.";
-		} else {
-			MarkdownRenderer.render(app, currentContent, el, childSourcePath, renderComponent).catch(
-				() => {
-					el.textContent = currentContent;
-				}
-			);
-		}
-		// dropping files onto the rendered body appends links/embeds
-		el.addEventListener("dragover", (e) => {
-			if (dropIsHandleable(e)) e.preventDefault();
-		});
-		el.addEventListener("drop", (e) => {
-			if (!dropIsHandleable(e)) return;
-			e.preventDefault();
-			e.stopPropagation();
-			collectDropLinks(e)
-				.then(async (text) => {
-					if (!text) return;
-					const file = plugin.resolveLink(linkText, sourcePath);
-					if (!file) return;
-					currentContent =
-						currentContent.trimEnd() === ""
-							? text
-							: currentContent.replace(/\n*$/, "\n") + text;
-					await app.vault.modify(file, currentContent);
-					mountRendered();
-				})
-				.catch((err) => new Notice("Inline Note: drop failed — " + err.message));
-		});
-		el.addEventListener("click", (e) => {
-			const anchor =
-				e.target instanceof Element && e.target.closest("a.internal-link");
-			if (anchor) {
-				e.preventDefault();
-				const target =
-					anchor.getAttribute("data-href") || anchor.getAttribute("href") || "";
-				if (target)
-					app.workspace.openLinkText(target, childSourcePath, e.metaKey || e.ctrlKey);
-				return;
-			}
-			// let embeds and external links handle their own clicks
-			if (
-				e.target instanceof Element &&
-				e.target.closest(".internal-embed, a.external-link, img, iframe, video, audio")
-			) {
-				return;
-			}
-			mountEditor();
-		});
-	};
-
-	/* preferred editing view: Obsidian's own embedded editor (the
-	 * Canvas mechanism). Returns a promise resolving to success. */
-	const mountNative = async (file) => {
+	/* the body view: Obsidian's own embedded editor (the Canvas
+	 * mechanism). Returns a promise resolving to success. */
+	const mountNative = async (file, focus) => {
 		const factory =
 			app.embedRegistry &&
 			app.embedRegistry.embedByExtension &&
@@ -515,12 +450,16 @@ function buildInlineBody(plugin, linkText, sourcePath, depth, ancestors, parentV
 				leaveBody(bodyText());
 			});
 
-			// focus the editor so typing starts immediately
-			const cm = embed.editMode.editor && embed.editMode.editor.cm;
-			if (cm && typeof cm.focus === "function") cm.focus();
-			else {
-				const content = container.querySelector(".cm-content");
-				if (content) content.focus();
+			// focus the editor only when the open came from an explicit
+			// expand, so typing starts immediately; idle (re)mounts must
+			// not steal focus
+			if (focus) {
+				const cm = embed.editMode.editor && embed.editMode.editor.cm;
+				if (cm && typeof cm.focus === "function") cm.focus();
+				else {
+					const content = container.querySelector(".cm-content");
+					if (content) content.focus();
+				}
 			}
 			return true;
 		} catch (e) {
@@ -537,7 +476,7 @@ function buildInlineBody(plugin, linkText, sourcePath, depth, ancestors, parentV
 	};
 
 	/* fallback editing view: bare CodeMirror */
-	const mountFallback = () => {
+	const mountFallback = (focus) => {
 		fallbackEditor = new EditorView({
 			doc: currentContent,
 			parent: contentEl,
@@ -627,21 +566,21 @@ function buildInlineBody(plugin, linkText, sourcePath, depth, ancestors, parentV
 			if (!fallbackEditor) return;
 			leaveBody(fallbackEditor.state.doc.toString());
 		});
-		fallbackEditor.focus();
+		if (focus) fallbackEditor.focus();
 	};
 
-	const mountEditor = () => {
+	const mountEditor = (focus) => {
 		clearBody();
 		const file = plugin.resolveLink(linkText, sourcePath);
 		if (file) {
-			mountNative(file).then((ok) => {
+			mountNative(file, focus).then((ok) => {
 				if (!ok && wrap.isConnected && !nativeEmbed && !fallbackEditor) {
 					clearBody();
-					mountFallback();
+					mountFallback(focus);
 				}
 			});
 		} else {
-			mountFallback();
+			mountFallback(focus);
 		}
 	};
 
@@ -673,11 +612,7 @@ function buildInlineBody(plugin, linkText, sourcePath, depth, ancestors, parentV
 				currentContent = content;
 				// long notes scroll inside a fixed-height body
 				wrap.classList.toggle("is-long", content.length > PREVIEW_LIMIT);
-				if (plugin.consumePendingFocus(linkText)) {
-					mountEditor();
-				} else {
-					mountRendered();
-				}
+				mountEditor(plugin.consumePendingFocus(linkText));
 			});
 		} else if (attempt < 10) {
 			window.setTimeout(() => loadContent(attempt + 1), 100);

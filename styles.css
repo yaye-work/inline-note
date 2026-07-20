@@ -132,48 +132,6 @@
 	padding: 2px 0;
 }
 
-/* --- rendered (reading) view of an idle inline note --- */
-.inline-note-rendered {
-	font-family: var(--font-text);
-	font-size: var(--font-text-size);
-	line-height: var(--line-height-normal);
-	color: var(--text-normal);
-	padding: 2px 0;
-	cursor: text;
-}
-/* the renderer gives every paragraph full note-page margins, which
-   reads as huge gaps inside a compact card — tighten to editor-like
-   line rhythm */
-.inline-note-rendered p,
-.inline-note-rendered ul,
-.inline-note-rendered ol,
-.inline-note-rendered h1,
-.inline-note-rendered h2,
-.inline-note-rendered h3,
-.inline-note-rendered h4,
-.inline-note-rendered h5,
-.inline-note-rendered h6 {
-	margin-block-start: 0.3em;
-	margin-block-end: 0.3em;
-}
-.inline-note-rendered > :first-child,
-.inline-note-rendered .markdown-preview-view > :first-child {
-	margin-top: 0;
-}
-.inline-note-rendered > :last-child,
-.inline-note-rendered .markdown-preview-view > :last-child {
-	margin-bottom: 0;
-}
-.inline-note-rendered img {
-	max-width: 100%;
-}
-.inline-note-empty {
-	color: var(--text-faint);
-	font-size: var(--font-ui-small);
-	font-style: italic;
-	cursor: pointer;
-}
-
 /* --- rendered ![[embeds]] inside fallback editors --- */
 .inline-note-embedded {
 	display: inline-block;
