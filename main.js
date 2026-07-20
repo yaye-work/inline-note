@@ -795,11 +795,50 @@ function buildToggleKeymap(plugin, getSourcePath, depth) {
 	);
 }
 
+/* Clicking the empty space below an inline card that sits on the last
+ * line would otherwise do nothing — the card is a block widget after
+ * the final line, so there's no line there to receive the cursor.
+ * Create one. Inactive in every other situation, so normal editors
+ * keep their native click-below-content behavior. */
+function buildClickBelowHandler(plugin) {
+	const lastLineHasOpenInline = (state) => {
+		const lastLine = state.doc.lineAt(state.doc.length);
+		LINK_RE.lastIndex = 0;
+		let m;
+		while ((m = LINK_RE.exec(lastLine.text)) !== null) {
+			if (m.index > 0 && lastLine.text[m.index - 1] === "!") continue;
+			const linkText = m[1].trim();
+			if (linkText && getInlineState(state, linkText) !== "closed") return true;
+		}
+		return false;
+	};
+
+	return EditorView.domEventHandlers({
+		mousedown: (e, view) => {
+			// a precise hit means the click landed on actual content
+			if (view.posAtCoords({ x: e.clientX, y: e.clientY }) != null) return false;
+			const docEnd = view.state.doc.length;
+			const endCoords = view.coordsAtPos(docEnd);
+			if (!endCoords || e.clientY <= endCoords.bottom) return false;
+			if (!lastLineHasOpenInline(view.state)) return false;
+			e.preventDefault();
+			view.dispatch({
+				changes: { from: docEnd, insert: "\n" },
+				selection: { anchor: docEnd + 1 },
+				scrollIntoView: true,
+			});
+			view.focus();
+			return true;
+		},
+	});
+}
+
 function buildInlineExtensions(plugin, getSourcePath, depth, getAncestors) {
 	return [
 		inlineStateField,
 		buildDecorationField(plugin, getSourcePath, depth, getAncestors),
 		buildToggleKeymap(plugin, getSourcePath, depth),
+		buildClickBelowHandler(plugin),
 	];
 }
 
