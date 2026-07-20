@@ -55,20 +55,6 @@
 	margin: 4px 0 8px 2px;
 }
 
-/* title: always shown, click to open the note in a tab */
-.inline-note-title {
-	font-size: var(--font-ui-small);
-	font-weight: 600;
-	color: var(--text-muted);
-	cursor: pointer;
-	user-select: none;
-	margin-bottom: 2px;
-	width: fit-content;
-}
-.inline-note-title:hover {
-	color: var(--text-accent);
-}
-
 /* style 1: vertical accent line only */
 .inline-note-style-line .inline-note-flow,
 .inline-note-style-card-line .inline-note-flow {
@@ -155,10 +141,27 @@
 	padding: 2px 0;
 	cursor: text;
 }
-.inline-note-rendered > p:first-child {
+/* the renderer gives every paragraph full note-page margins, which
+   reads as huge gaps inside a compact card — tighten to editor-like
+   line rhythm */
+.inline-note-rendered p,
+.inline-note-rendered ul,
+.inline-note-rendered ol,
+.inline-note-rendered h1,
+.inline-note-rendered h2,
+.inline-note-rendered h3,
+.inline-note-rendered h4,
+.inline-note-rendered h5,
+.inline-note-rendered h6 {
+	margin-block-start: 0.3em;
+	margin-block-end: 0.3em;
+}
+.inline-note-rendered > :first-child,
+.inline-note-rendered .markdown-preview-view > :first-child {
 	margin-top: 0;
 }
-.inline-note-rendered > p:last-child {
+.inline-note-rendered > :last-child,
+.inline-note-rendered .markdown-preview-view > :last-child {
 	margin-bottom: 0;
 }
 .inline-note-rendered img {

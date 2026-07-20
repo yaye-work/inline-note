@@ -288,18 +288,6 @@ function buildInlineBody(plugin, linkText, sourcePath, depth, ancestors, parentV
 	const wrap = document.createElement("div");
 	wrap.className = "inline-note-flow";
 
-	// visible title (the note's name); click opens it in a tab
-	const titleEl = wrap.appendChild(document.createElement("div"));
-	titleEl.className = "inline-note-title";
-	titleEl.textContent = linkText;
-	titleEl.setAttribute("aria-label", "Open note");
-	titleEl.addEventListener("mousedown", (e) => e.stopPropagation());
-	titleEl.addEventListener("click", (e) => {
-		e.preventDefault();
-		e.stopPropagation();
-		app.workspace.openLinkText(linkText, sourcePath, e.metaKey || e.ctrlKey);
-	});
-
 	const contentEl = wrap.appendChild(document.createElement("div"));
 	contentEl.className = "inline-note-content";
 
